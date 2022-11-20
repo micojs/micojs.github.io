@@ -26040,6 +26040,7 @@ class IDE {
     this.fs = fs;
     this.fs.onDirty = _ => model.dirty();
     if (this.fs.ls().length == 0) this.loadExample();
+    this.emitStd();
     this.refreshTree();
     const activeFile = model.get('activeFile', '/source/main.js');
     const openFileList = model.get('openFileList', []);
@@ -26142,6 +26143,7 @@ class IDE {
     return undefined;
   }
   onActivateFile(container) {
+    if (!this.projectModel) return;
     const path = this.getEditor(container)?.path;
     this.editors[path]?.editor?.layout();
     this.projectModel.set('activeFile', path);
