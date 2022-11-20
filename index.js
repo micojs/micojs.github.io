@@ -26409,29 +26409,41 @@ function render() {
     this.preview.showHTML(await Browser.build(this.fs, size));
   }
   async export() {
-    if (this.model.get('platform') == 'espboy' && navigator.serial) {
-      const rsp = await fetch(this.view.postform.action, {
-        method: "post",
-        mode: 'cors',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          body: this.fs
-        })
+    let img;
+    try {
+      await new Promise((ok, fail) => {
+        img = dom(this.view.exports, 'img', {
+          src: "http://buildbot.duckdns.org/build?bid=" + Math.random(),
+          onload: ok,
+          onerror: fail
+        });
       });
-      if (rsp.headers.get('content-type') == "application/octet-stream") {
-        ESPboy.upload(await rsp.arrayBuffer());
-      } else {
-        const errmsg = await rsp.text();
-        console.error(errmsg);
-      }
-    } else {
-      this.view.postbody.value = JSON.stringify(this.fs);
-      this.view.postform.submit();
+    } finally {
+      if (img) img.remove();
     }
+
+    // if (this.model.get('platform') == 'espboy' && navigator.serial) {
+    //     const rsp = await fetch(this.view.postform.action, {
+    //         method:"post",
+    //         mode:'cors',
+    //         headers: {
+    //             'Content-Type': 'application/json'
+    //         },
+    //         body: JSON.stringify({body:this.fs})
+    //     });
+    //     if (rsp.headers.get('content-type') == "application/octet-stream") {
+    //         ESPboy.upload(await rsp.arrayBuffer());
+    //     } else {
+    //         const errmsg = await rsp.text();
+    //         console.error(errmsg);
+    //     }
+    // } else {
+    //     this.view.postbody.value = JSON.stringify(this.fs);
+    //     this.view.postform.submit();
+    // }
   }
 }
+
 module.exports.IDE = IDE;
 
 },{"./Browser.js":77,"./ESPBoy.js":78,"./Model.js":80,"./Preview.js":81,"./ProjectControls.js":82,"./TabContainer.js":84,"./TreeListNode.js":85,"./dom.js":86,"./pngfs.js":90,"./stdlib.js":91}],80:[function(require,module,exports){
