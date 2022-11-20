@@ -1,0 +1,350 @@
+<!doctype html>
+<html>
+  <head>
+    <style>
+      html, body, #main, #main>* {
+          width: 100%;
+          height: 100%;
+          margin: 0px;
+          padding: 0px;
+          position: absolute;
+          overflow: hidden;
+      }
+
+      #main {
+          background: #101010;
+          color: #FFFFFF;
+          font-family: Menlo, Monaco, "Courier New", monospace;
+          font-size: 0.8em;
+      }
+
+      #ide {
+          display: flex;
+          flex-flow: row;
+      }
+
+      #top {
+          display: flex;
+          flex-flow: column;
+          padding: 10px;
+          box-sizing: border-box;
+      }
+
+      #projectSelector {
+          display: flex;
+          flex-flow: row;
+          flex-wrap: wrap;
+          overflow: auto;
+          justify-content: space-around;
+      }
+
+      h1 {
+          margin: 0;
+          display: flex;
+          flex-direction: column;
+          justify-content: center;
+          overflow: hidden;
+          text-overflow: ellipsis;
+      }
+
+      #newProjects, .projectSelectorRow {
+          display: flex;
+          flex-flow: row;
+          height: 38px;
+          padding: 5px 0;
+      }
+
+      .projectSelectorRow {
+          position: relative;
+          background-color: #222;
+          border: 1px solid #444;
+          width: 320px;
+          height: 240px;
+          box-sizing: border-box;
+          margin: 10px;
+      }
+
+      .projectSelectorRow .nameLabel {
+          font-size: 1.4em;
+          padding: 10px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+      }
+
+      .projectSelectorRow .openProject, .projectSelectorRow .deleteProject {
+          display: flex;
+          justify-content: center;
+          position: absolute;
+          width: 30%;
+          height: 38px;
+          right: 10px;
+          bottom: 62px;
+      }
+
+      .projectSelectorRow .deleteProject {
+          bottom: 10px;
+      }
+      .projectSelectorRow .deleteProject:hover {
+          background: red;
+      }
+
+      #newProjects #newprojectname {
+          flex-grow: 1;
+      }
+
+      #leftbar, #tabcontainer {
+          height: 100%;
+          padding: 0;
+          margin: 0;
+      }
+
+      .hidden {
+          display: none !important;
+      }
+
+      #leftbar {
+          min-width: 320px;
+          flex-shrink: 0;
+          display: flex;
+          flex-flow: column;
+      }
+
+      #tabcontainer {
+          flex-basis: 100%;
+          border-left: 1px solid #777;
+          border-right: 1px solid #777;
+          display: flex;
+          flex-flow: column;
+      }
+
+      #treelist {
+          overflow: auto;
+          flex-basis: 100%;
+      }
+
+      .treenode {
+      }
+
+      .treenode .filelabel {
+          cursor: pointer;
+      }
+
+      .treenode.active {
+          background: #DDD;
+          color: #333;
+      }
+
+      .tabset {
+          height: 20px;
+          background: #101010;
+          position: relative;
+          display: flex;
+      }
+
+      .tabset::after {
+          content: ' ';
+          width: 100%;
+          border-bottom: 1px solid #777;
+          box-sizing: border-box;
+      }
+
+      .tabset::before {
+          content: ' ';
+          width: 10px;
+          border-bottom: 1px solid #777;
+          box-sizing: border-box;
+      }
+
+      .tab {
+          padding: 0 0 0 15px;
+          cursor: pointer;
+      }
+
+      .tab.inactive {
+          border-bottom: 1px solid #777;
+      }
+
+      .tab.active {
+          border: 1px solid #777;
+          border-bottom: 0;
+          background: #1e1e1e;
+      }
+
+      .tabcontainer {
+          height: 100%;
+          position: relative;
+      }
+
+      .tabclose {
+          font-size: 0.85em;
+          padding: 2px;
+          color: #733;
+          cursor: pointer;
+          border: 1px solid transparent;
+          margin-left: 2px;
+          box-sizing: border-box;
+
+          opacity: 0;
+          -webkit-transition: opacity 0.5s ease-in-out;
+          -moz-transition: opacity 0.5s ease-in-out;
+          transition: opacity 0.5s ease-in-out;
+      }
+
+      .tab:hover .tabclose {
+          opacity: 1;
+      }
+
+      .tabclose:hover {
+          background: #AAA;
+          color: #333;
+      }
+
+      #preview {
+          display: flex;
+          flex-flow: column;
+      }
+
+      #previewcontrols {
+          display: flex;
+          flex-flow: row;
+          height: 38px;
+          justify-content: center;
+          border-bottom: 1px solid #777;
+          border-top: 1px solid #777;
+          background: #1e1e1e;
+          padding: 5px 0;
+      }
+
+      #projectcontrols {
+          border-bottom: 1px solid #777;
+          background: #1e1e1e;
+          height: 42px;
+          flex-grow: 0;
+          box-sizing: border-box;
+          display: flex;
+          flex-flow: row;
+          padding: 4px;
+      }
+      
+      select, input, button {
+          background-color: inherit;
+          border: 1px solid transparent;
+          color: #FFF;
+          padding: 10px;
+          box-sizing: border-box;
+          line-height: 100%;
+      }
+
+      input {
+          border-bottom: 1px solid #444;
+      }
+      
+      .previewbutton {
+          padding: 12px 10px;
+          box-sizing: border-box;
+          border: 1px solid transparent;
+      }
+
+      button:hover, select:hover, .previewbutton:hover {
+          border: 1px solid #777;
+          background: #444;
+      }
+
+      #screencontainer {
+          position: relative;
+      }
+
+      #screen {
+          position: absolute;
+          border: 0 none;
+          margin: auto;
+          top: 0px;
+          left: 0px;
+          right: 0px;
+          bottom: 0px;
+          background: black;
+      }
+
+      #fileops {
+          display: flex;
+          flex-flow: row;
+          justify-content: right;
+          height: 20px;
+          flex-basis: 0;
+      }
+
+      #fileops>* {
+          padding: 0 5px;
+          cursor: pointer;
+      }
+    </style>
+    <script src="index.min.js"></script>
+
+    <script>
+      var require = { paths: { vs: './monaco/vs' } };
+    </script>
+    <script src="./monaco/vs/loader.js"></script>
+    <script src="./monaco/vs/editor/editor.main.nls.js"></script>
+    <script src="./monaco/vs/editor/editor.main.js"></script>
+  </head>
+  <body>
+    <div id="main">
+
+      <div id="top" class="hidden" index-Main="setupTOP">
+        <div id="newProjects">
+          <h1>My Projects</h1>
+          <input id="newprojectname" bind-change="checkName"></input>
+          <button bind-click="newProject">New Project</button>
+        </div>
+        <div id="projectSelector" readwrite-value="project" bind-click="clickProject" for-each="projectList">
+          <div class="projectSelectorRow">
+            <div class="nameLabel">${name}</div>
+            <button class="openProject" bind-click="openProject" project-id="${id}">Open</button>
+            <button class="deleteProject" bind-click="deleteProject" project-id="${id}">Delete</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="ide" class="hidden" index-Main="setupIDE">
+        <div id="leftbar">
+          <div id="projectcontrols" index-IDE="setupProjectControls">
+            <button id="toTOP" bind-click="goToTOP">«</button>
+            <h1 id="projectNameLabel" read-text="projectName"></h1>
+          </div>
+          <div id="preview" index-IDE="setupPreview">
+            <div id="screencontainer">
+              <iframe src="javascript:void(0);" id="screen"></iframe>
+            </div>
+            <div id="previewcontrols">
+              <select id="platform" readwrite-value="platform">
+                <!-- <option value="pokitto">Pokitto</option> -->
+                <option value="espboy">ESPBoy</option>
+                <!-- <option value="blit">32Blit</option> -->
+              </select>
+              <select id="zoom" bind-change="resize">
+                <option value="1">1x</option>
+                <option value="2">2x</option>
+                <option value="4">4x</option>
+              </select>
+              <button class="previewbutton" id="run" bind-click="run">Run</button>
+              <button class="previewbutton" id="export" bind-click="export">Build</button>
+            </div>
+          </div>
+          <div id="fileops">
+            <button id="newFile" bind-click="createFile">+File</button>
+            <button id="newDir" bind-click="createDir">+Dir</button>
+          </div>
+          <div id="treelist"></div>
+        </div>
+        <div id="tabcontainer" index-IDE="setupTabContainer"></div>
+        <div class="hidden">
+          <iframe id="postresponse" name="postresponse"></iframe>
+          <form id="postform" target="postresponse" method="post" action="http://buildbot.duckdns.org/build">
+            <input type="hidden" name="body" id="postbody"></input>
+          </form>
+        </div>
+      </div>
+
+    </div>
+  </body>
+</html>
