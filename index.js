@@ -25913,9 +25913,11 @@ async function showConnectPopup() {
                 ['div', {
                     style:{
                         position: "absolute",
-                        width: "300px",
-                        height: "200px",
+                        width: "210px",
+                        height: "100px",
                         margin: "auto",
+                        padding: "18px",
+                        boxSizing: "border-box",
                         left: 0,
                         right: 0,
                         top: 0,
@@ -25924,11 +25926,33 @@ async function showConnectPopup() {
                         borderRadius: '10px',
                         border: '1px solid #555'
                     },
-                    onclick:_=>{
-                        root.remove();
-                        resolve();
-                    }
-                }]
+                }, [
+                    ['h1', {
+                        textContent:'Ready!',
+                        style:{
+                            textAlign:'center',
+                            fontFamily:'Menlo, Monaco, "Courier New", monospace',
+                            color:'white'
+                        }
+                    }],
+                    ['div', [
+                        ['button', {
+                            textContent:'Cancel',
+                            onclick:_=>{
+                                root.remove();
+                                fail();
+                            }
+                        }],
+                        ['button', {
+                            textContent:'Flash ESPboy',
+                            onclick:_=>{
+                                root.remove();
+                                resolve();
+                            }
+
+                        }]
+                    ]]
+                ]]
             ]);
     });
 }
@@ -26409,38 +26433,36 @@ function render() {
     this.preview.showHTML(await Browser.build(this.fs, size));
   }
   async export() {
+    this.preview.setExportVisibility(false);
     let img;
     try {
       const remote = this.parent.remote;
-      let key = this.projectModel.get('reqId');
+      let key = this.projectModel.get('RPIN');
       if (!key) {
         key = await remote.requestKey();
-        this.projectModel.set('reqId', key);
+        this.projectModel.set('RPIN', key);
       }
-      await remote.request(key, {
-        build: this.fs.toJSON()
+      const result = await remote.requestBuild(key, {
+        fs: this.fs.toJSON()
       });
-      await new Promise((ok, fail) => {
-        img = dom(this.view.exports, 'img', {
-          src: `http://buildbot.duckdns.org/build?key=${escape(key)}&rnd=${Math.random()}`,
-          onload: ok,
-          onerror: fail
-        });
-      });
-      const url = await remote.get(key + '/url');
-      if (this.model.get('platform') == 'espboy' && navigator.serial) {
-        const rsp = await fetch(url);
-        if (rsp.headers.get('content-type') == "application/octet-stream") {
-          ESPboy.upload(await rsp.arrayBuffer());
+      console.log(result);
+      if (result && typeof result == 'object' && result.url) {
+        const url = result.url;
+        if (this.model.get('platform') == 'espboy' && navigator.serial) {
+          const rsp = await fetch(url);
+          if (rsp.headers.get('content-type') == "application/octet-stream") {
+            ESPboy.upload(await rsp.arrayBuffer());
+          } else {
+            const errmsg = await rsp.text();
+            console.error(errmsg);
+          }
         } else {
-          const errmsg = await rsp.text();
-          console.error(errmsg);
+          location.href = url;
         }
-      } else {
-        location.href = url;
       }
     } finally {
       if (img) img.remove();
+      this.preview.setExportVisibility(true);
     }
   }
 }
@@ -26647,6 +26669,9 @@ class Preview {
     };
     return lcd[platform];
   }
+  setExportVisibility(visible) {
+    this.view.export.classList.toggle('hidden', !visible);
+  }
   resize() {
     const container = this.view.screencontainer;
     const size = this.getPlatformSize();
@@ -26712,16 +26737,32 @@ var _app = require("firebase/app");
 var _database = require("firebase/database");
 class Remote {
   #db;
+  #listen;
   constructor() {}
   async requestKey() {
     return (0, _database.push)((0, _database.child)((0, _database.ref)(this.#db), 'project')).key;
   }
-  async request(key, data) {
+  async saveProject(key, data) {
     await (0, _database.set)((0, _database.ref)(this.#db, 'project/' + key), data);
   }
-  async get(key) {
+  async loadProject(key) {
     const snapshot = await (0, _database.get)((0, _database.ref)(this.#db, 'project/' + key));
     return snapshot.exists() ? snapshot.val() : undefined;
+  }
+  async requestBuild(key, project) {
+    await (0, _database.update)((0, _database.ref)(this.#db), {
+      [`/project/${key}`]: project,
+      [`/request/${key}`]: 'build',
+      [`/build/${key}`]: null
+    });
+    return new Promise((ok, fail) => {
+      const listen = (0, _database.ref)(this.#db, `/build/${key}`);
+      (0, _database.onValue)(listen, snapshot => {
+        if (!snapshot.exists()) return;
+        (0, _database.off)(listen);
+        ok(snapshot.val());
+      });
+    });
   }
   boot() {
     const FBAPP = (0, _app.initializeApp)({
