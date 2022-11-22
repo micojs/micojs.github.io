@@ -113,12 +113,47 @@ function setPen(r, g, b){
         b = pen.b;
     }
 
+    const pal = new Uint8Array(palette.buffer);
+    let closest;
+
+    if (typeof r == 'number' && (g === undefined || b === undefined)) {
+        closest = r;
+        g = pal[r * 4 + 1];
+        b = pal[r * 4 + 2];
+        r = pal[r * 4 + 0];
+    }
+
     _internal.pen = {
         r:r&0xFF,
         g:g&0xFF,
         b:b&0xFF,
         a:255
     };
+
+    if (closest === undefined) {
+        closest = 0;
+        let closestDistance = -1>>>0;
+        for (let i = 1; i < 256; ++i) {
+            let tr = pal[i * 4 + 0];
+            let dr = r - tr;
+
+            let tg = pal[i * 4 + 1];
+            let dg = g - tg;
+
+            let tb = pal[i * 4 + 2];
+            let db = b - tb;
+
+            let d = dr*dr + dg*dg + db*db;
+            if (d < closestDistance) {
+                closest = i;
+                closestDistance = d;
+                if (!closestDistance)
+                    break;
+            }
+        }
+    }
+
+    _internal.recolor = closest;
 
     return {
         r:r&0xFF,
