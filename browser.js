@@ -106,7 +106,21 @@ function angleDifference() {
 function setScreenMode(){}
 
 function setPen(r, g, b){
+    let pen = r;
+    if (pen && typeof pen == 'object') {
+        r = pen.r;
+        g = pen.g;
+        b = pen.b;
+    }
+
     _internal.pen = {
+        r:r&0xFF,
+        g:g&0xFF,
+        b:b&0xFF,
+        a:255
+    };
+
+    return {
         r:r&0xFF,
         g:g&0xFF,
         b:b&0xFF,
