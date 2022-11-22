@@ -1,6 +1,7 @@
 var UP = false, DOWN = false, LEFT = false, RIGHT = false, A = false, B = false, C = false, D = false;
 
 const _internal = {
+    font:R.fontMini,
     framebuffer:null,
     pen: {r:0, g:0, b:0, a:255},
     recolor: 0,
@@ -113,7 +114,9 @@ function setPen(r, g, b){
     };
 }
 
-function setFont(){}
+function setFont(font){
+    _internal.font = font;
+}
 
 function setLED(){}
 
@@ -337,4 +340,58 @@ function image(...args){
     return
 }
 
-function text(){}
+function text(str, x, y){
+    if (!_internal.font)
+        return;
+
+    str += '';
+    x |= 0;
+    y |= 0;
+
+    for (let c of str) {
+        x += drawChar(x, y, c.charCodeAt(0));
+    }
+    return;
+
+    function pixel(x, y) {
+        const fb = _internal.framebuffer;
+        if (x < fb.width && y < fb.height) {
+            const pen = _internal.pen;
+            let i = (y * fb.width + x) * 4;
+            fb.data[i++] = pen.r;
+            fb.data[i++] = pen.g;
+            fb.data[i++] = pen.b;
+            fb.data[i++] = 255;
+        }
+    }
+
+    function drawChar(x, y, ch){
+        let font = _internal.font;
+        const fontW = font[0];
+        const fontH = font[1];
+        const hbytes = (fontH + 7) >> 3;
+        if (font[3] && ch >= 'a'.charCodeAt(0) && ch <= 'z'.charCodeAt(0)) {
+            ch = (ch - 'a'.charCodeAt(0)) + 'A'.charCodeAt(0);
+        }
+        const index = ch - font[2];
+
+        let bitmap = 4 + index * (1 + fontW * hbytes); //add an offset to the pointer
+        const charW = font[bitmap++]; //first byte of char is char width
+
+        for (let i = 0; i < charW; ++i) {
+            for(let byteNum = 0; byteNum < hbytes; ++byteNum) {
+                let bitcolumn = font[bitmap++];
+                const endRow = (8 + 8*byteNum < fontH) ? (8 + 8*byteNum) : fontH;
+                for (let j = 8*byteNum; j < endRow; ++j) { // was j<=h
+                    if (bitcolumn&1) {
+                        pixel(x + i, y + j);
+                    }
+                    bitcolumn>>=1;
+                }
+            }
+        }
+
+        return charW + 1;
+    }
+
+}
