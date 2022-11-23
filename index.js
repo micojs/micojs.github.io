@@ -26433,7 +26433,7 @@ function render() {
 `);
   }
   async run(size) {
-    this.model.set('previewHTML', !size ? '' : await Browser.build(this.fs, size));
+    if (this.fs) this.model.set('previewHTML', !size ? '' : await Browser.build(this.fs, size));
   }
   async export() {
     this.preview.setExportVisibility(false);
