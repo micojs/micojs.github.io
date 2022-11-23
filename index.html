@@ -279,7 +279,7 @@
       }
     </style>
 
-    <script src="index.js"></script>
+    <script src="index.min.js"></script>
     <script>
       var require = { paths: { vs: './monaco/vs' } };
     </script>
@@ -313,7 +313,7 @@
           </div>
           <div id="preview" index-IDE="setupPreview">
             <div id="screencontainer">
-              <iframe src="javascript:void(0);" id="screen"></iframe>
+              <iframe src="about:blank" id="screen"></iframe>
             </div>
             <div id="previewcontrols">
               <select id="platform" readwrite-value="platform">
@@ -326,7 +326,7 @@
                 <option value="2">2x</option>
                 <option value="4">4x</option>
               </select>
-              <button class="previewbutton" id="run" bind-click="run">Run</button>
+              <button class="previewbutton" id="run" bind-click="toggleRun">Run</button>
               <button class="previewbutton" id="export" bind-click="export">Build</button>
             </div>
           </div>

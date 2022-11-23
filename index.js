@@ -592,11 +592,12 @@ void JSinit() {
   js::gc();
 }
 
-void JSupdate(uint32_t time) {
+void JSupdate(uint32_t time, uint32_t updateCount) {
   {
     js::Local args = js::arguments(1);
     js::set(args, V_0, time);
-    js::call($[[update]], args, false);
+    for (uint32_t i = 0; i < updateCount; ++i)
+      js::call($[[update]], args, false);
     js::call($[[render]], args, false);
   }
   js::gc();
@@ -25838,7 +25839,7 @@ image-rendering: pixelated;
 }
 </style>
 <script src="assets.js"></script>
-<script src="browser.js"></script>
+<script src="browser.js?nc=3"></script>
 <script>
 ${code}
 </script>
@@ -26022,6 +26023,7 @@ class IDE {
     this.booted = false;
     model.watch('state', state => this.changeState(state));
     model.watch('windowSize', size => this.resize());
+    model.watch('runSize', size => this.run(size));
   }
   resize() {
     if (!this.el.classList.contains('hidden')) {
@@ -26036,6 +26038,7 @@ class IDE {
       this.resize();
       this.openProject();
     }
+    this.run(null);
   }
   async closeProject() {
     this.fs = null;
@@ -26196,7 +26199,7 @@ class IDE {
   emitStd(platform) {
     if (!this.fs || !platform) return;
     const code = `"set platform ${platform}";
-"addSysCall setScreenMode setPen setFont setLED setTexture";
+"addSysCall setScreenMode setFPS setPen setFont setLED setTexture";
 "addSysCall setMirrored setFlipped setTransparent";
 "addSysCall getWidth getHeight";
 "addSysCall clear image text";
@@ -26430,7 +26433,7 @@ function render() {
 `);
   }
   async run(size) {
-    this.preview.showHTML(await Browser.build(this.fs, size));
+    this.model.set('previewHTML', !size ? '' : await Browser.build(this.fs, size));
   }
   async export() {
     this.preview.setExportVisibility(false);
@@ -26658,6 +26661,7 @@ class Preview {
     this.parent = parent;
     model.watch(this.view);
     model.watch('platform', _ => this.resize());
+    model.watch('previewHTML', html => this.showHTML(html));
     this.resize();
   }
   getPlatformSize() {
@@ -26696,15 +26700,17 @@ class Preview {
     this.view.screencontainer.innerHTML = this.view.screen.outerHTML;
     const screen = this.view.screencontainer.querySelector('iframe');
     screen.src = "about:blank";
-    screen.contentWindow.document.open();
-    screen.contentWindow.document.write(html);
-    screen.contentWindow.document.close();
-    screen.focus();
+    if (html) {
+      screen.contentWindow.document.open();
+      screen.contentWindow.document.write(html);
+      screen.contentWindow.document.close();
+      screen.focus();
+    }
     this.resize();
+    this.view.run.textContent = html ? 'Stop' : 'Run';
   }
-  run() {
-    const size = this.getPlatformSize();
-    if (size) this.parent.run(size);
+  toggleRun() {
+    this.model.set('runSize', this.model.get('previewHTML') ? null : this.getPlatformSize());
   }
   export() {
     this.parent.export();
@@ -40593,6 +40599,11 @@ module.exports.PNGFS = class PNGFS {
 
 },{}],102:[function(require,module,exports){
 module.exports.stdlib = `
+/**
+ * Sets the target framerate that the game should update at.
+ */
+declare function setFPS(fps:number):void;
+
 /**
  * Sets the current drawing color.
  * Returns a color.

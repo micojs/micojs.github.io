@@ -2,6 +2,7 @@ var UP = false, DOWN = false, LEFT = false, RIGHT = false, A = false, B = false,
 
 const _internal = {
     font:R.fontMini,
+    updateFrequency: 1000 / 30,
     framebuffer:null,
     pen: {r:0, g:0, b:0, a:255},
     recolor: 0,
@@ -36,15 +37,36 @@ addEventListener('DOMContentLoaded', _=>{
 
     const ctx = canvas.getContext("2d");
     _internal.framebuffer = ctx.getImageData(0, 0, canvas.width, canvas.height);
-
+    let startTime = performance.now();
+    let prevTime = startTime;
+    let updateCount = 0;
     init();
     requestAnimationFrame(tick);
 
-    function tick(delta) {
-        update(delta);
-        render(delta);
-        ctx.putImageData(_internal.framebuffer, 0, 0);
-        requestAnimationFrame(tick);
+    function tick() {
+        let now = performance.now() - startTime;
+        let delta = now - prevTime;
+        prevTime = now;
+        let targetUpdateCount = _internal.updateFrequency ? now / _internal.updateFrequency : updateCount + 1;
+        let updateDelta = (targetUpdateCount - updateCount)|0;
+        try {
+            if (updateDelta >= 1) {
+                if (updateDelta > 10) {
+                    updateCount = targetUpdateCount|0;
+                    updateDelta = 1;
+                    delta = 1;
+                } else {
+                    updateCount += updateDelta;
+                }
+                let partial = delta / updateDelta;
+                for (let i = 0; i < updateDelta; ++i)
+                    update(now);
+                render(now);
+                ctx.putImageData(_internal.framebuffer, 0, 0);
+            }
+        } finally {
+            requestAnimationFrame(tick);
+        }
     }
 });
 
@@ -104,6 +126,12 @@ function angleDifference() {
 }
 
 function setScreenMode(){}
+
+function setFPS(targetFPS) {
+    targetFPS |= 0;
+    _internal.updateFrequency = targetFPS ? 1000 / targetFPS : 0;
+    return {};
+}
 
 function setPen(r, g, b){
     let pen = r;
