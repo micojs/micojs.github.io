@@ -1518,7 +1518,7 @@ function esProg(ast, program, filename, jsc) {
   const parser = new ProgramParser(program);
   parser.location.file = ast.file;
   parser.parse(ast);
-  program.sourceAST.push(ast);
+  program.sourceAST.unshift(ast);
   return program;
 }
 
