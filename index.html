@@ -279,7 +279,7 @@
       }
     </style>
 
-    <script src="index.min.js"></script>
+    <script src="index.js"></script>
     <script>
       var require = { paths: { vs: './monaco/vs' } };
     </script>
@@ -334,7 +334,7 @@
             <button id="newFile" bind-click="createFile">+File</button>
             <button id="newDir" bind-click="createDir">+Dir</button>
           </div>
-          <div id="treelist"></div>
+          <div id="treelist" bind-dragenter="cancelEvent" bind-dragover="cancelEvent" bind-drop="dropFile"></div>
         </div>
         <div id="tabcontainer" index-IDE="setupTabContainer"></div>
         <div id="exports" class="hidden">
