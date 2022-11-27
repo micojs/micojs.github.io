@@ -522,7 +522,7 @@ int main() {
 `,
   blit: `
 #define RESOURCEREF(x) ((js::ResourceRef*)x)
-#define RESOURCEDECL(x) const uint8_t PROGMEM x[]
+#define RESOURCEDECL(x) const uint8_t x[]
 #define PRINT(str) blit::debug((const char*)(str))
 #define PRINTLN() blit::debug("\\n\\r");
 #define STRDECL(VAR, LEN, STR) __attribute__ ((aligned)) const std::array<uint8_t, sizeof(js::Buffer) + LEN> VAR = js::bufferFrom<LEN>(STR);
@@ -598,7 +598,7 @@ void JSupdate() {
 `,
   espboy: `
 #define RESOURCEREF(x) ((js::ResourceRef*)x)
-#define RESOURCEDECL(x) const uint8_t x[]
+#define RESOURCEDECL(x) const uint8_t PROGMEM x[]
 #define PRINT(str) Serial.print((const char*)str)
 #define PRINTLN() Serial.print("\\n");
 #define STRDECL(VAR, LEN, STR) __attribute__ ((aligned)) const std::array<uint8_t, sizeof(js::Buffer) + LEN> VAR = js::bufferFrom<LEN>(STR);
@@ -25964,7 +25964,7 @@ class Console {
     }
 
     tween() {
-        this.#tweens = 15;
+        this.#tweens = 30;
         if (this.#interval)
             return;
         this.#interval = setInterval(_=>{
@@ -25974,7 +25974,7 @@ class Console {
                 clearInterval(this.#interval);
                 this.#interval = 0;
             }
-        }, 33);
+        }, 1000 / this.#tweens);
     }
 
     append(msg) {
@@ -26023,11 +26023,10 @@ async function disconnect() {
 async function connect() {
     if (espStub)
         return;
-
     const esploader = await esptool.connect({
-        log: (...args) => console.log(...args),
-        debug: (...args) => console.debug(...args),
-        error: (...args) => console.error(...args),
+        log: (...args) => postMessage({log:[args]}, '*'),
+        debug: (...args) => postMessage({log:[args]}, '*'),
+        error: (...args) => postMessage({log:[args]}, '*')
     });
 
     try {
@@ -26110,11 +26109,10 @@ async function upload(binary) {
         await connect();
     }
     if (espStub) {
-        console.log("Uploading ", binary);
         await espStub.flashData(
             binary,
             (bytesWritten, totalBytes) => {
-                console.log(Math.floor((bytesWritten / totalBytes) * 100) + "%");
+                postMessage({build:["Uploading: " + Math.floor((bytesWritten / totalBytes) * 100) + "%"]}, '*');
             },
             0
         );
@@ -26155,6 +26153,9 @@ const {
 const {
   stdlib
 } = require('./stdlib.js');
+const {
+  loadExample
+} = require('./example.js');
 const ESPboy = require('./ESPBoy.js');
 const Browser = require('./Browser.js');
 const {
@@ -26231,9 +26232,10 @@ class IDE {
       fs = new PNGFS(model.get('fs', null));
     }
     this.#projectModel = model;
+    window.projectFS = fs;
     this.#fs = fs;
     this.#fs.onDirty = _ => model.dirty();
-    if (this.#fs.ls().length == 0) this.loadExample();
+    if (this.#fs.ls().length == 0) loadExample(this.#fs);
     this.emitStd(this.model.get('platform'));
     this.refreshTree();
     const activeFile = model.get('activeFile', '/source/main.js');
@@ -26249,6 +26251,9 @@ class IDE {
     this.setupMonaco();
     this.#view = index(this.el, {}, this);
     this.model.watch('platform', platform => this.emitStd(platform));
+    this.model.watch('projectName', name => {
+      if (name != this.model.get('previewProject', '')) this.model.set('previewHTML', '');
+    });
   }
   setupPreview(el) {
     this.#preview = new Preview(el, this, this.model);
@@ -26416,7 +26421,7 @@ class IDE {
         editor
       } = this.#editors[path];
       if (node != container) continue;
-      editor.dispose();
+      if (editor.dispose) editor.dispose();
       delete this.#editors[path];
       if (this.#projectModel) {
         const openFileList = this.#projectModel.get('openFileList', []);
@@ -26496,181 +26501,16 @@ class ${fileName} {
       this.openFile(reference.path);
     }
   }
-  loadExample() {
-    const fs = this.#fs;
-    fs.mkdir('/images');
-    fs.mkdir('/sounds');
-    fs.mkdir('/source');
-    fs.writeFile('/source/bat.js', `const batDead = R.bat1;
-const batFly = [R.bat2, R.bat3, R.bat4];
-
-class Bat {
-    constructor(id) {
-        this.id = id;
-        this.x = rand(300);
-        this.y = rand(10);
-        this.z = 1;
-        this.vx = 0;
-        this.vy = 0;
-        this.hp = 100;
-        this.angle = 0;
-    }
-
-    updatePlayer() {
-        this.vx += RIGHT - LEFT;
-        this.vy += DOWN - UP;
-    }
-
-    updateAI() {
-        let tx = this.x - bats[0].x;
-        let ty = this.y - bats[0].y;
-
-        if (tx*tx + ty*ty < 500) {
-            this.vx *= 1.026;
-            this.vy *= 1.026;
-        } else {
-            this.vx += (tx < 0) * 2 - 1;
-            this.vy += (ty < 0) * 2 - 1;
-        }
-    }
-
-    update() {
-        if (!this.id)
-            this.updatePlayer();
-        else
-            this.updateAI();
-
-        let x = this.x;
-        let y = this.y;
-        let vx = this.vx;
-        let vy = this.vy;
-
-        for (let i = 0; i < this.id; ++i) {
-            let tx = x - bats[i].x;
-            let ty = y - bats[i].y;
-            let d = tx*tx + ty*ty;
-            if (d < 200) {
-                vx += tx;
-                vy += ty;
-            }
-        }
-
-        vx *= 0.975;
-        vy *= 0.975;
-
-        x += vx * 0.1;
-        y += vy * 0.1;
-
-        if (y > bgHeight*0.45 && vy > 0) {
-            vy = -vy;
-            y = bgHeight*0.45;
-        }
-
-        if (vx && vy) {
-            this.angle = -atan2(vy, vx);
-        }
-
-        this.vx = vx;
-        this.vy = vy;
-        this.x = x;
-        this.y = y;
-
-        if (!this.id) {
-            cameraX = (cameraX * 15 + (x - width/2)) / 16;
-            cameraY = (cameraY * 15 + (y - height/2)) / 16;
-            cameraY = max(height - bgHeight, cameraY);
-            cameraY = min(height - bgHeight * 0.6, cameraY);
-        }
-    }
-
-    draw() {
-        setFlipped(this.vx < 0);
-        setMirrored(false);
-        setPen((!!this.id) * 2);
-
-        let texture = batDead;
-        if (this.hp > 0)
-            texture = batFly[(this.id + (frame >> 2))%batFly.length];
-        image(texture, this.x - cameraX, this.y - cameraY, this.angle, 1 - 0.25 * !!this.id);
-    }
-}
-`);
-    fs.writeFile('/source/main.js', `
-"include /source/bat.js";
-
-let width;
-let height;
-let bgHeight;
-let bgWidth;
-
-let cameraX = 0.01;
-let cameraY = 0.01;
-
-let frame = 0;
-let frames = 0;
-let start = 0;
-let fps = 0;
-let prevTime = 0;
-const bats = new Array(10);
-const black = setPen(0, 0, 0);
-
-function init() {
-    width = getWidth();
-    height = getHeight();
-    bgHeight = getHeight(R.background);
-    bgWidth = getWidth(R.background);
-
-    for (let i = 0; i < bats.length; ++i)
-        bats[i] = new Bat(i);
-}
-
-function update(time) {
-    let targetFrame = ceil(time * 30 / 1000)
-    let delta = targetFrame - frame;
-    prevTime = time;
-    frames++;
-    if (time - start > 1000) {
-        fps = frames;
-        frames = 0;
-        start = time;
-        debug(fps);
-    }
-
-    for (let i = 0; i < delta; ++i) {
-        ++frame;
-        for (let bat of bats)
-            bat.update(delta);
-    }
-}
-
-function render() {
-    setMirrored(false);
-    setFlipped(false);
-    setTransparent(false);
-    setPen(0);
-
-    let bgX = (-cameraX) % bgWidth;
-    if (bgX > 0)
-        bgX -= bgWidth;
-    image(R.background, bgX, -cameraY);
-    image(R.background, bgX + bgWidth, -cameraY);
-
-    for (let bat of bats)
-        bat.draw();
-
-    setPen(black);
-    text(fps, 5, 5);
-}
-`);
-  }
   async run(size) {
     if (!this.#fs) return;
     if (!size) {
+      this.model.set('previewProject', '');
       this.model.set('previewHTML', '');
     } else {
       try {
         const fs = await PreBuild(this.#fs);
         const html = await Browser.build(fs, size);
+        this.model.set('previewProject', this.model.get('projectName'));
         this.model.set('previewHTML', html);
       } catch (ex) {
         console.log(ex);
@@ -26695,6 +26535,9 @@ function render() {
     this.#preview.setExportVisibility(false);
     let img;
     try {
+      postMessage({
+        build: ["Building"]
+      }, '*');
       const fs = await PreBuild(this.#fs);
       await Browser.build(fs, [0, 0]);
       const remote = this.parent.remote;
@@ -26749,7 +26592,7 @@ function render() {
 }
 module.exports.IDE = IDE;
 
-},{"./Browser.js":78,"./Console.js":79,"./ESPBoy.js":80,"./Model.js":82,"./PreBuild.js":83,"./Preview.js":84,"./ProjectControls.js":85,"./TabContainer.js":88,"./TreeListNode.js":89,"./dom.js":90,"./pngfs.js":104,"./stdlib.js":105}],82:[function(require,module,exports){
+},{"./Browser.js":78,"./Console.js":79,"./ESPBoy.js":80,"./Model.js":82,"./PreBuild.js":83,"./Preview.js":84,"./ProjectControls.js":85,"./TabContainer.js":88,"./TreeListNode.js":89,"./dom.js":90,"./example.js":92,"./pngfs.js":105,"./stdlib.js":106}],82:[function(require,module,exports){
 const localforage = require('localforage');
 
 localforage.config({name:"model"});
@@ -26821,6 +26664,11 @@ class Model {
                 this.set(k, data[k]);
         }
         this.#storageId = storageId;
+    }
+
+    async destroy(storageId) {
+        if (storageId || this.#storageId)
+            await localforage.removeItem(storageId || this.#storageId);
     }
 
     init(values) {
@@ -26926,7 +26774,7 @@ class Model {
 
 module.exports.Model = Model;
 
-},{"localforage":102}],83:[function(require,module,exports){
+},{"localforage":103}],83:[function(require,module,exports){
 const {PNGFS} = require('./pngfs.js');
 const {dom} = require('./dom.js');
 
@@ -27355,7 +27203,7 @@ async function prebuild(fs) {
 
 module.exports.PreBuild = prebuild;
 
-},{"./dom.js":90,"./pngfs.js":104}],84:[function(require,module,exports){
+},{"./dom.js":90,"./pngfs.js":105}],84:[function(require,module,exports){
 "use strict";
 
 const {
@@ -27492,7 +27340,7 @@ class Remote {
 }
 module.exports.Remote = Remote;
 
-},{"firebase/app":98,"firebase/database":99}],87:[function(require,module,exports){
+},{"firebase/app":99,"firebase/database":100}],87:[function(require,module,exports){
 const {dom, index} = require('./dom.js');
 
 class TOP {
@@ -27586,6 +27434,14 @@ class TOP {
         const index = projectList.indexOf(project);
         projectList.splice(index, 1);
         this.#model.dirty('projectList');
+
+        const projectId = project.id;
+        const modelId = "project-" + projectId;
+        let model = this.#model.get(modelId, null);
+        if (!model)
+            model = new Model();
+        model.destroy(modelId);
+        this.#model.set(modelId, null);
     }
 }
 
@@ -29926,6 +29782,82 @@ const ga = async t => {
 exports.connect = ga;
 
 },{}],92:[function(require,module,exports){
+module.exports.loadExample = function loadExample(fs) {
+    fs.mkdir('/images');
+
+    fs.writeFile('/images/wheel.png', "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAAXNSR0IArs4c6QAAAOpJREFUOI1jZMAN/qPxGbEpwirIwMDwf5uJE4qA15l9WNVjMwBDMz5D0A3AqRmXIcgGENSMzRAmonTgASzoAp7LvsLZ26O4GRgYGBjUfHzgYre2bEFRj+KCyKxPqIad3svgeXoviliWcjhWA/7zzzNhYGBgYBA48henc12uQ1ykED6TgQGaThiRNSODD4mnUfiKEbMw1DxYmY4ZBjBQduwiTpcgA4pjAZYOsHojTX0OAwMDA8PqSScx5B6sTGdgYGBghLmA8WPSGaJthWlGdgEMoLgEZig01DE0YzOAgQE1GzPiEWNgYGBgAABEAkFa5rPi7QAAAABJRU5ErkJggg==");
+
+    fs.mkdir('/sounds');
+    fs.mkdir('/source');
+
+    fs.writeFile('/source/main.js', `
+const bgColor = setPen(0, 0, 0);
+const txtColor = setPen(64, 128, 255);
+
+let screenWidth, screenHeight;
+
+class Wheel {
+    init() {
+        this.x = screenWidth/2;
+        this.y = screenHeight/2;
+        this.speedX = rand(-3, 3);
+        this.speedY = rand(-3, 3);
+        this.color = 0;
+    }
+
+    update() {
+        if (A)
+            this.color++;
+        if (B)
+            this.color = 0;
+
+        this.x += this.speedX;
+        this.y += this.speedY;
+
+        let bounce = false;
+        while (!this.speedX || (this.x > screenWidth && this.speedX > 0) || (this.x < 0 && this.speedX < 0)) {
+            this.speedX = rand(-5, 5);
+            bounce = true;
+        }
+        while (!this.speedY || (this.y > screenHeight && this.speedY > 0) || (this.y < 0 && this.speedY < 0)) {
+            this.speedY = rand(-5, 5);
+            bounce = true;
+        }
+        if (bounce)
+            debug("Bounce");
+    }
+
+    render() {
+        setMirrored(this.speedX < 0);
+        setFlipped(this.speedY < 0);
+        setPen(this.color);
+        image(R.wheel, this.x, this.y);
+    }
+}
+
+const wheel = new Wheel();
+
+function init() {
+    screenWidth = getWidth();
+    screenHeight = getHeight();
+    wheel.init();
+}
+
+function update(time) {
+    wheel.update();
+}
+
+function render() {
+    setPen(bgColor);
+    clear();
+    wheel.render();
+    setPen(txtColor);
+    text("Hello world!", 5, 5);
+}
+`);
+};
+
+},{}],93:[function(require,module,exports){
 const {dom, index} = require('./dom.js');
 
 const {Model} = require('./Model.js');
@@ -29995,7 +29927,7 @@ class Main {
 window.main = new Main();
 
 
-},{"./IDE.js":81,"./Model.js":82,"./Remote.js":86,"./TOP.js":87,"./dom.js":90}],93:[function(require,module,exports){
+},{"./IDE.js":81,"./Model.js":82,"./Remote.js":86,"./TOP.js":87,"./dom.js":90}],94:[function(require,module,exports){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -30930,7 +30862,7 @@ function registerCoreComponents(variant) {
  */
 registerCoreComponents('');
 
-},{"@firebase/component":94,"@firebase/logger":96,"@firebase/util":97,"idb":100}],94:[function(require,module,exports){
+},{"@firebase/component":95,"@firebase/logger":97,"@firebase/util":98,"idb":101}],95:[function(require,module,exports){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -31336,7 +31268,7 @@ class ComponentContainer {
 }
 exports.ComponentContainer = ComponentContainer;
 
-},{"@firebase/util":97}],95:[function(require,module,exports){
+},{"@firebase/util":98}],96:[function(require,module,exports){
 (function (process){(function (){
 "use strict";Object.defineProperty(exports,"__esModule",{value:true});exports._TEST_ACCESS_hijackHash=exports._TEST_ACCESS_forceRestClient=exports._ReferenceImpl=exports._QueryParams=exports._QueryImpl=exports.TransactionResult=exports.QueryConstraint=exports.OnDisconnect=exports.Database=exports.DataSnapshot=void 0;exports._repoManagerDatabaseFromApp=repoManagerDatabaseFromApp;exports._setSDKVersion=setSDKVersion;exports._validateWritablePath=exports._validatePathString=void 0;exports.child=child;exports.connectDatabaseEmulator=connectDatabaseEmulator;exports.enableLogging=enableLogging;exports.endAt=endAt;exports.endBefore=endBefore;exports.equalTo=equalTo;exports.forceLongPolling=forceLongPolling;exports.forceWebSockets=forceWebSockets;exports.get=get;exports.getDatabase=getDatabase;exports.goOffline=goOffline;exports.goOnline=goOnline;exports.increment=increment;exports.limitToFirst=limitToFirst;exports.limitToLast=limitToLast;exports.off=off;exports.onChildAdded=onChildAdded;exports.onChildChanged=onChildChanged;exports.onChildMoved=onChildMoved;exports.onChildRemoved=onChildRemoved;exports.onDisconnect=onDisconnect;exports.onValue=onValue;exports.orderByChild=orderByChild;exports.orderByKey=orderByKey;exports.orderByPriority=orderByPriority;exports.orderByValue=orderByValue;exports.push=push;exports.query=query;exports.ref=ref;exports.refFromURL=refFromURL;exports.remove=remove;exports.runTransaction=runTransaction;exports.serverTimestamp=serverTimestamp;exports.set=set;exports.setPriority=setPriority;exports.setWithPriority=setWithPriority;exports.startAfter=startAfter;exports.startAt=startAt;exports.update=update;var _app=require("@firebase/app");var _component=require("@firebase/component");var _util=require("@firebase/util");var _logger=require("@firebase/logger");const name="@firebase/database";const version="0.13.10";/**
  * @license
@@ -35316,7 +35248,7 @@ Connection;/**
  */exports._TEST_ACCESS_forceRestClient=forceRestClient;registerDatabase();
 
 }).call(this)}).call(this,require('_process'))
-},{"@firebase/app":93,"@firebase/component":94,"@firebase/logger":96,"@firebase/util":97,"_process":103}],96:[function(require,module,exports){
+},{"@firebase/app":94,"@firebase/component":95,"@firebase/logger":97,"@firebase/util":98,"_process":104}],97:[function(require,module,exports){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -35533,7 +35465,7 @@ function setUserLogHandler(logCallback, options) {
   }
 }
 
-},{}],97:[function(require,module,exports){
+},{}],98:[function(require,module,exports){
 (function (process,global){(function (){
 "use strict";
 
@@ -37610,7 +37542,7 @@ function getModularInstance(service) {
 }
 
 }).call(this)}).call(this,require('_process'),typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"_process":103}],98:[function(require,module,exports){
+},{"_process":104}],99:[function(require,module,exports){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -37648,7 +37580,7 @@ var version = "9.14.0";
  */
 (0, _app.registerVersion)(name, version, 'app');
 
-},{"@firebase/app":93}],99:[function(require,module,exports){
+},{"@firebase/app":94}],100:[function(require,module,exports){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -37666,7 +37598,7 @@ Object.keys(_database).forEach(function (key) {
   });
 });
 
-},{"@firebase/database":95}],100:[function(require,module,exports){
+},{"@firebase/database":96}],101:[function(require,module,exports){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -37763,7 +37695,7 @@ function getMethod(target, prop) {
   has: (target, prop) => !!getMethod(target, prop) || oldTraps.has(target, prop)
 }));
 
-},{"./wrap-idb-value.js":101}],101:[function(require,module,exports){
+},{"./wrap-idb-value.js":102}],102:[function(require,module,exports){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -37934,7 +37866,7 @@ function wrap(value) {
 const unwrap = value => reverseTransformCache.get(value);
 exports.u = unwrap;
 
-},{}],102:[function(require,module,exports){
+},{}],103:[function(require,module,exports){
 (function (global){(function (){
 /*!
     localForage -- Offline Storage, Improved
@@ -40754,7 +40686,7 @@ module.exports = localforage_js;
 });
 
 }).call(this)}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],103:[function(require,module,exports){
+},{}],104:[function(require,module,exports){
 // shim for using process in browser
 var process = module.exports = {};
 
@@ -40940,7 +40872,7 @@ process.chdir = function (dir) {
 };
 process.umask = function() { return 0; };
 
-},{}],104:[function(require,module,exports){
+},{}],105:[function(require,module,exports){
 let nextId = 1;
 
 class Node {
@@ -41319,7 +41251,7 @@ module.exports.PNGFS = class PNGFS {
     }
 }
 
-},{}],105:[function(require,module,exports){
+},{}],106:[function(require,module,exports){
 module.exports.stdlib = `
 /**
  * Sets the target framerate that the game should update at.
@@ -41460,4 +41392,4 @@ declare var D:boolean";
 
 `;
 
-},{}]},{},[92]);
+},{}]},{},[93]);

@@ -76,6 +76,8 @@ function debug(...args) {
         window.top.postMessage({log:args}, "*");
 }
 
+window.onerror = msg => debug(msg);
+
 function rand(...args) {
     let a, b, min, range;
 
