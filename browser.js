@@ -72,6 +72,8 @@ addEventListener('DOMContentLoaded', _=>{
 
 function debug(...args) {
     console.log(...args);
+    if (window.top != window)
+        window.top.postMessage({log:args}, "*");
 }
 
 function rand(...args) {

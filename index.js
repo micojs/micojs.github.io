@@ -522,7 +522,7 @@ int main() {
 `,
   blit: `
 #define RESOURCEREF(x) ((js::ResourceRef*)x)
-#define RESOURCEDECL(x) extern const uint8_t PROGMEM x[]
+#define RESOURCEDECL(x) const uint8_t PROGMEM x[]
 #define PRINT(str) blit::debug((const char*)(str))
 #define PRINTLN() blit::debug("\\n\\r");
 #define STRDECL(VAR, LEN, STR) __attribute__ ((aligned)) const std::array<uint8_t, sizeof(js::Buffer) + LEN> VAR = js::bufferFrom<LEN>(STR);
@@ -563,8 +563,8 @@ void JSupdate(uint32_t time) {
 }
 `,
   pokitto: `
-#define RESOURCEREF(x) ((js::ResourceRef*)x)
-#define RESOURCEDECL(x) extern const uint8_t x[]
+#define RESOURCEREF(x) ((js::ResourceRef*)::x)
+#define RESOURCEDECL(x) const uint8_t x[]
 #define PRINT(str) LOG((const char*)(str))
 #define PRINTLN() LOG("\\n");
 #define STRDECL(VAR, LEN, STR) __attribute__ ((aligned)) const std::array<uint8_t, sizeof(js::Buffer) + LEN> VAR = js::bufferFrom<LEN>(STR);
@@ -598,7 +598,7 @@ void JSupdate() {
 `,
   espboy: `
 #define RESOURCEREF(x) ((js::ResourceRef*)x)
-#define RESOURCEDECL(x) extern const uint8_t x[]
+#define RESOURCEDECL(x) const uint8_t x[]
 #define PRINT(str) Serial.print((const char*)str)
 #define PRINTLN() Serial.print("\\n");
 #define STRDECL(VAR, LEN, STR) __attribute__ ((aligned)) const std::array<uint8_t, sizeof(js::Buffer) + LEN> VAR = js::bufferFrom<LEN>(STR);
@@ -674,7 +674,10 @@ function encode(node, reg) {
       if (ctx instanceof ir.Var) {
         if (node.variable instanceof ir.Literal) {
           ctx.addDeref(node.variable.value);
-          if (ctx == cpp.program.resources) return `RESOURCEREF(${node.variable.value})`;
+          if (ctx == cpp.program.resources) {
+            if (!(node.variable.value in cpp.program.resourceData)) throw `No resource named ${node.variable.value}`;
+            return `RESOURCEREF(${node.variable.value})`;
+          }
         }
         return `js::get(${encode(ctx)}, ${encode(node.variable, true)})`;
       } else if (ctx instanceof ir.Scope) {
@@ -25921,6 +25924,88 @@ async function build(fs, size) {
 module.exports.build = build;
 
 },{"../JSC/jsc.js":6}],79:[function(require,module,exports){
+const {dom} = require('./dom.js');
+
+class Console {
+    maxLines = 1000;
+    #prevLine = {
+        text:null,
+        count:0,
+        el:null
+    };
+    onAppend;
+
+    #tweens = 0;
+    #interval;
+
+    constructor(filter) {
+        this.el = dom('div', {className:'console'});
+
+        if (typeof filter == 'string')
+            filter = ((filter, msg) => msg[filter]).bind(this, filter);
+
+        window.addEventListener('message', event => {
+            let msgs = filter(event.data);
+            if (!Array.isArray(msgs))
+                return;
+
+            let top = this.el.scrollTop;
+
+            for (let msg of msgs) {
+                this.append(msg);
+            }
+
+            setTimeout(_=>this.el.scrollTop = top, 0);
+            this.tween();
+
+            if (this.onAppend)
+                this.onAppend();
+        });
+    }
+
+    tween() {
+        this.#tweens = 15;
+        if (this.#interval)
+            return;
+        this.#interval = setInterval(_=>{
+            this.el.scrollTop = (this.el.scrollTop * 13 + this.el.scrollHeight) / 14;
+            this.#tweens--;
+            if (this.#tweens <= 0) {
+                clearInterval(this.#interval);
+                this.#interval = 0;
+            }
+        }, 33);
+    }
+
+    append(msg) {
+        if (Array.isArray(msg))
+            msg = msg.join(' ');
+
+        const line = (msg + '');
+
+        if (line === this.#prevLine.text) {
+            this.#prevLine.count++;
+            this.#prevLine.el.classList.add('repeat');
+            this.#prevLine.el.setAttribute('repeat', this.#prevLine.count);
+        } else {
+            while (this.el.children.length >= this.maxLines)
+                this.el.children[0].remove();
+            this.#prevLine.text = line;
+            this.#prevLine.count = 1;
+            this.#prevLine.el = dom(this.el, 'pre', {
+                className:'line',
+                textContent:line,
+                attr:{
+                    time:(new Date()).toLocaleString()
+                }
+            });
+        }
+    }
+}
+
+module.exports.Console = Console;
+
+},{"./dom.js":90}],80:[function(require,module,exports){
 const {dom, index} = require('./dom.js');
 const esptool = require('./esptool.js');
 
@@ -26039,7 +26124,7 @@ async function upload(binary) {
 
 module.exports.upload = upload;
 
-},{"./dom.js":89,"./esptool.js":90}],80:[function(require,module,exports){
+},{"./dom.js":90,"./esptool.js":91}],81:[function(require,module,exports){
 "use strict";
 
 const {
@@ -26061,6 +26146,9 @@ const {
 const {
   ProjectControls
 } = require('./ProjectControls.js');
+const {
+  Console
+} = require('./Console.js');
 const {
   PNGFS
 } = require('./pngfs.js');
@@ -26084,18 +26172,22 @@ class ImageEditor {
 }
 ;
 class IDE {
+  el;
+  parent;
+  model;
+  #view = null;
+  #tabContainer = null;
+  #consoleContainer = null;
+  #fs = null;
+  #projectModel = null;
+  #editors = {};
+  #treeNodes = {};
+  #preview = null;
+  #booted = false;
   constructor(el, parent, model) {
-    this.fs = null;
-    this.model = model;
-    this.projectModel = null;
-    this.editors = {};
-    this.view = null;
-    this.tabContainer = null;
-    this.treeNodes = {};
-    this.preview = null;
     this.el = el;
     this.parent = parent;
-    this.booted = false;
+    this.model = model;
     model.watch('state', state => this.changeState(state));
     model.watch('windowSize', size => this.resize());
     model.watch('runSize', size => this.run(size));
@@ -26103,7 +26195,7 @@ class IDE {
   resize() {
     if (!this.el.classList.contains('hidden')) {
       this.boot();
-      for (let key in this.editors) this.editors[key]?.editor?.layout?.();
+      for (let key in this.#editors) this.#editors[key]?.editor?.layout?.();
     }
   }
   async changeState(newState) {
@@ -26116,11 +26208,11 @@ class IDE {
     this.run(null);
   }
   async closeProject() {
-    this.fs = null;
-    this.projectModel = null;
-    [...Object.values(this.editors)].forEach(({
+    this.#fs = null;
+    this.#projectModel = null;
+    [...Object.values(this.#editors)].forEach(({
       shortPath
-    }) => this.tabContainer.close(shortPath));
+    }) => this.#tabContainer.close(shortPath));
   }
   async openProject() {
     const projectId = this.model.get("projectId");
@@ -26138,10 +26230,10 @@ class IDE {
     if (!fs) {
       fs = new PNGFS(model.get('fs', null));
     }
-    this.projectModel = model;
-    this.fs = fs;
-    this.fs.onDirty = _ => model.dirty();
-    if (this.fs.ls().length == 0) this.loadExample();
+    this.#projectModel = model;
+    this.#fs = fs;
+    this.#fs.onDirty = _ => model.dirty();
+    if (this.#fs.ls().length == 0) this.loadExample();
     this.emitStd(this.model.get('platform'));
     this.refreshTree();
     const activeFile = model.get('activeFile', '/source/main.js');
@@ -26152,20 +26244,33 @@ class IDE {
     this.openFile(activeFile);
   }
   boot() {
-    if (this.booted) return;
-    this.booted = true;
+    if (this.#booted) return;
+    this.#booted = true;
     this.setupMonaco();
-    this.view = index(this.el, {}, this);
+    this.#view = index(this.el, {}, this);
     this.model.watch('platform', platform => this.emitStd(platform));
   }
   setupPreview(el) {
-    this.preview = new Preview(el, this, this.model);
+    this.#preview = new Preview(el, this, this.model);
+    return false;
+  }
+  setupConsoleContainer(el) {
+    const cc = new TabContainer(el);
+    this.#consoleContainer = cc;
+    const logcon = new Console('log');
+    logcon.onAppend = _ => cc.activate('debug');
+    cc.add('debug', logcon.el);
+    cc.activate('debug');
+    const buildcon = new Console('build');
+    buildcon.onAppend = _ => cc.activate('compilation');
+    buildcon.maxLines = 1;
+    cc.add('compilation', buildcon.el);
     return false;
   }
   setupTabContainer(el) {
-    this.tabContainer = new TabContainer(el);
-    this.tabContainer.onClose = this.onCloseEditor.bind(this);
-    this.tabContainer.onActivate = this.onActivateFile.bind(this);
+    this.#tabContainer = new TabContainer(el);
+    this.#tabContainer.onClose = this.onCloseEditor.bind(this);
+    this.#tabContainer.onActivate = this.onActivateFile.bind(this);
     return false;
   }
   setupProjectControls(el) {
@@ -26186,9 +26291,9 @@ class IDE {
   }
   refreshTree() {
     const treelist = document.querySelector('#treelist');
-    this.treeNodes = {};
+    this.#treeNodes = {};
     while (treelist.childNodes.length) treelist.removeChild(treelist.childNodes[0]);
-    for (let entry of this.fs.ls("/")) treelist.appendChild(new TreeListNode(entry, "/", this.openFile.bind(this), this.treeNodes).dom);
+    for (let entry of this.#fs.ls("/")) treelist.appendChild(new TreeListNode(entry, "/", this.openFile.bind(this), this.#treeNodes).dom);
   }
   cancelEvent(event) {
     event.stopPropagation();
@@ -26202,8 +26307,8 @@ class IDE {
       return;
     }
     let parentPath = null;
-    for (let path in this.treeNodes) {
-      let node = this.treeNodes[path];
+    for (let path in this.#treeNodes) {
+      let node = this.#treeNodes[path];
       if (node.dom == parentElement) {
         parentPath = path;
         break;
@@ -26225,7 +26330,7 @@ class IDE {
     }
     function loadFile(fr, file) {
       // console.log(parentPath + '/' + file.name, fr.result);
-      this.fs.writeFile(parentPath + '/' + file.name, fr.result);
+      this.#fs.writeFile(parentPath + '/' + file.name, fr.result);
       if (! --pending) this.refreshTree();
     }
   }
@@ -26240,23 +26345,23 @@ class IDE {
         let newval = editor.getValue();
         if (newval != contents) {
           contents = newval;
-          this.fs.writeFile(path, contents);
+          this.#fs.writeFile(path, contents);
         }
       });
       return editor;
     },
     raw(parentElement, path, contents) {},
     png(parentElement, path, contents) {
-      return new ImageEditor(parentElement, path, contents, this.fs);
+      return new ImageEditor(parentElement, path, contents, this.#fs);
     }
   };
   openFile(path) {
     const shortPath = path.split('/').pop();
-    if (this.tabContainer.activate(shortPath)) {
-      this.projectModel.set('activeFile', path);
+    if (this.#tabContainer.activate(shortPath)) {
+      this.#projectModel.set('activeFile', path);
       return;
     }
-    let contents = this.fs.readFile(path);
+    let contents = this.#fs.readFile(path);
     if (contents === false) return;
     let editorNode = dom('div', {
       style: {
@@ -26271,59 +26376,59 @@ class IDE {
       path,
       editor: null
     };
-    this.editors[path] = entry;
-    const openFileList = this.projectModel.get('openFileList', []);
+    this.#editors[path] = entry;
+    const openFileList = this.#projectModel.get('openFileList', []);
     openFileList.push(path);
-    this.projectModel.dirty('openFileList');
-    this.tabContainer.add(shortPath, editorNode);
-    this.tabContainer.activate(shortPath);
+    this.#projectModel.dirty('openFileList');
+    this.#tabContainer.add(shortPath, editorNode);
+    this.#tabContainer.activate(shortPath);
     let factory = (shortPath.match(/\.([^./]+)$/i)?.[1] + '').toLowerCase();
     while (typeof factory == 'string') factory = this.editorFactories[factory];
     if (!factory) factory = this.editorFactories.raw;
     entry.editor = factory.call(this, editorNode, path, contents);
   }
   getEditor(container) {
-    for (let path in this.editors) {
-      const entry = this.editors[path];
+    for (let path in this.#editors) {
+      const entry = this.#editors[path];
       if (entry.node == container) return entry;
     }
     return null;
   }
   getActiveTreeNode() {
-    for (let key in this.treeNodes) {
-      if (this.treeNodes[key].isActive()) return this.treeNodes[key];
+    for (let key in this.#treeNodes) {
+      if (this.#treeNodes[key].isActive()) return this.#treeNodes[key];
     }
     return undefined;
   }
   onActivateFile(container) {
-    if (!this.projectModel) return;
+    if (!this.#projectModel) return;
     const path = this.getEditor(container)?.path;
-    this.editors[path]?.editor?.layout?.();
-    this.projectModel.set('activeFile', path);
-    for (let key in this.treeNodes) {
-      this.treeNodes[key].setActive(key == path);
+    this.#editors[path]?.editor?.layout?.();
+    this.#projectModel.set('activeFile', path);
+    for (let key in this.#treeNodes) {
+      this.#treeNodes[key].setActive(key == path);
     }
   }
   onCloseEditor(container) {
-    for (let path in this.editors) {
+    for (let path in this.#editors) {
       const {
         node,
         editor
-      } = this.editors[path];
+      } = this.#editors[path];
       if (node != container) continue;
       editor.dispose();
-      delete this.editors[path];
-      if (this.projectModel) {
-        const openFileList = this.projectModel.get('openFileList', []);
+      delete this.#editors[path];
+      if (this.#projectModel) {
+        const openFileList = this.#projectModel.get('openFileList', []);
         openFileList.splice(openFileList.indexOf('path'), 1);
-        this.projectModel.dirty('openFileList');
+        this.#projectModel.dirty('openFileList');
       }
       break;
     }
     return true;
   }
   emitStd(platform) {
-    if (!this.fs || !platform) return;
+    if (!this.#fs || !platform) return;
     const code = `"set platform ${platform}";
 "addSysCall setScreenMode setFPS setPen setFont setLED setTexture";
 "addSysCall setMirrored setFlipped setTransparent";
@@ -26332,11 +26437,11 @@ class IDE {
 "push globals UP DOWN LEFT RIGHT A B C D";
 "include /source/main.js"
 `;
-    this.fs?.writeFile('/std.js', code);
-    this.editors['/std.js']?.editor.setValue(code);
+    this.#fs?.writeFile('/std.js', code);
+    this.#editors['/std.js']?.editor.setValue(code);
   }
   createFile() {
-    const fs = this.fs;
+    const fs = this.#fs;
     const name = prompt("File Name:");
     if (!name) return;
     const reference = this.getActiveTreeNode();
@@ -26375,7 +26480,7 @@ class ${fileName} {
     this.openFile(strpath);
   }
   createDir() {
-    const fs = this.fs;
+    const fs = this.#fs;
     const name = prompt("Directory Name:");
     if (!name) return;
     const reference = this.getActiveTreeNode();
@@ -26392,7 +26497,7 @@ class ${fileName} {
     }
   }
   loadExample() {
-    const fs = this.fs;
+    const fs = this.#fs;
     fs.mkdir('/images');
     fs.mkdir('/sounds');
     fs.mkdir('/source');
@@ -26559,32 +26664,54 @@ function render() {
 `);
   }
   async run(size) {
-    if (!this.fs) return;
+    if (!this.#fs) return;
     if (!size) {
       this.model.set('previewHTML', '');
     } else {
-      const fs = await PreBuild(this.fs);
-      const html = await Browser.build(fs, size);
-      this.model.set('previewHTML', html);
+      try {
+        const fs = await PreBuild(this.#fs);
+        const html = await Browser.build(fs, size);
+        this.model.set('previewHTML', html);
+      } catch (ex) {
+        console.log(ex);
+        if (ex && typeof ex == 'object') {
+          if (ex.description)
+            // esprima exception
+            postMessage({
+              build: [ex.description]
+            }, '*');
+          if (ex.error) postMessage({
+            build: [ex.error]
+          }, '*');
+        } else if (typeof ex == 'string') {
+          postMessage({
+            build: [ex]
+          }, '*');
+        }
+      }
     }
   }
   async export() {
-    this.preview.setExportVisibility(false);
+    this.#preview.setExportVisibility(false);
     let img;
     try {
-      const fs = await PreBuild(this.fs);
+      const fs = await PreBuild(this.#fs);
       await Browser.build(fs, [0, 0]);
       const remote = this.parent.remote;
-      let key = this.projectModel.get('RPIN');
+      let key = this.#projectModel.get('RPIN');
       if (!key) {
         key = await remote.requestKey();
-        this.projectModel.set('RPIN', key);
+        this.#projectModel.set('RPIN', key);
       }
       const result = await remote.requestBuild(key, {
         fs: fs.toJSON()
       });
-      console.log(result);
-      if (result && typeof result == 'object' && result.url) {
+      if (!result || typeof result != 'object') {
+        console.log(result);
+        throw 'Unexpected error';
+      }
+      if (result.error) throw result;
+      if (result.url) {
         const url = result.url;
         if (this.model.get('platform') == 'espboy' && navigator.serial) {
           const rsp = await fetch(url);
@@ -26598,15 +26725,31 @@ function render() {
           location.href = url;
         }
       }
+    } catch (ex) {
+      console.log(ex);
+      if (ex && typeof ex == 'object') {
+        if (ex.description)
+          // esprima exception
+          postMessage({
+            build: [ex.description]
+          }, '*');
+        if (ex.error) postMessage({
+          build: [ex.error]
+        }, '*');
+      } else if (typeof ex == 'string') {
+        postMessage({
+          build: [ex]
+        }, '*');
+      }
     } finally {
       if (img) img.remove();
-      this.preview.setExportVisibility(true);
+      this.#preview.setExportVisibility(true);
     }
   }
 }
 module.exports.IDE = IDE;
 
-},{"./Browser.js":78,"./ESPBoy.js":79,"./Model.js":81,"./PreBuild.js":82,"./Preview.js":83,"./ProjectControls.js":84,"./TabContainer.js":87,"./TreeListNode.js":88,"./dom.js":89,"./pngfs.js":103,"./stdlib.js":104}],81:[function(require,module,exports){
+},{"./Browser.js":78,"./Console.js":79,"./ESPBoy.js":80,"./Model.js":82,"./PreBuild.js":83,"./Preview.js":84,"./ProjectControls.js":85,"./TabContainer.js":88,"./TreeListNode.js":89,"./dom.js":90,"./pngfs.js":104,"./stdlib.js":105}],82:[function(require,module,exports){
 const localforage = require('localforage');
 
 localforage.config({name:"model"});
@@ -26783,7 +26926,7 @@ class Model {
 
 module.exports.Model = Model;
 
-},{"localforage":101}],82:[function(require,module,exports){
+},{"localforage":102}],83:[function(require,module,exports){
 const {PNGFS} = require('./pngfs.js');
 const {dom} = require('./dom.js');
 
@@ -27212,7 +27355,7 @@ async function prebuild(fs) {
 
 module.exports.PreBuild = prebuild;
 
-},{"./dom.js":89,"./pngfs.js":103}],83:[function(require,module,exports){
+},{"./dom.js":90,"./pngfs.js":104}],84:[function(require,module,exports){
 "use strict";
 
 const {
@@ -27282,7 +27425,7 @@ class Preview {
 }
 module.exports.Preview = Preview;
 
-},{"./dom.js":89}],84:[function(require,module,exports){
+},{"./dom.js":90}],85:[function(require,module,exports){
 const {dom, index} = require('./dom.js');
 
 class ProjectControls {
@@ -27300,7 +27443,7 @@ class ProjectControls {
 
 module.exports.ProjectControls = ProjectControls;
 
-},{"./dom.js":89}],85:[function(require,module,exports){
+},{"./dom.js":90}],86:[function(require,module,exports){
 "use strict";
 
 var _app = require("firebase/app");
@@ -27349,7 +27492,7 @@ class Remote {
 }
 module.exports.Remote = Remote;
 
-},{"firebase/app":97,"firebase/database":98}],86:[function(require,module,exports){
+},{"firebase/app":98,"firebase/database":99}],87:[function(require,module,exports){
 const {dom, index} = require('./dom.js');
 
 class TOP {
@@ -27448,7 +27591,7 @@ class TOP {
 
 module.exports.TOP = TOP;
 
-},{"./dom.js":89}],87:[function(require,module,exports){
+},{"./dom.js":90}],88:[function(require,module,exports){
 const {dom} = require('./dom.js');
 
 class TabContainer {
@@ -27546,7 +27689,7 @@ class TabContainer {
 
 module.exports.TabContainer = TabContainer;
 
-},{"./dom.js":89}],88:[function(require,module,exports){
+},{"./dom.js":90}],89:[function(require,module,exports){
 const {dom} = require('./dom.js');
 
 class TreeListNode {
@@ -27593,7 +27736,7 @@ class TreeListNode {
 
 module.exports.TreeListNode = TreeListNode;
 
-},{"./dom.js":89}],89:[function(require,module,exports){
+},{"./dom.js":90}],90:[function(require,module,exports){
 function dom(...args) {
     let tag = "div";
     let parent = null;
@@ -27631,6 +27774,12 @@ function dom(...args) {
             Object.assign(node.style, props.style);
             props = Object.assign({}, props);
             delete props.style;
+        }
+        if (props.attr) {
+            for (let key in props.attr) {
+                node.setAttribute(key, props.attr[key]);
+            }
+            delete props.attr;
         }
         Object.assign(node, props);
     }
@@ -27701,7 +27850,7 @@ function index(el, map = {}, bind = null) {
 module.exports.dom = dom;
 module.exports.index = index;
 
-},{}],90:[function(require,module,exports){
+},{}],91:[function(require,module,exports){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -29776,7 +29925,7 @@ const ga = async t => {
 };
 exports.connect = ga;
 
-},{}],91:[function(require,module,exports){
+},{}],92:[function(require,module,exports){
 const {dom, index} = require('./dom.js');
 
 const {Model} = require('./Model.js');
@@ -29846,7 +29995,7 @@ class Main {
 window.main = new Main();
 
 
-},{"./IDE.js":80,"./Model.js":81,"./Remote.js":85,"./TOP.js":86,"./dom.js":89}],92:[function(require,module,exports){
+},{"./IDE.js":81,"./Model.js":82,"./Remote.js":86,"./TOP.js":87,"./dom.js":90}],93:[function(require,module,exports){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -30781,7 +30930,7 @@ function registerCoreComponents(variant) {
  */
 registerCoreComponents('');
 
-},{"@firebase/component":93,"@firebase/logger":95,"@firebase/util":96,"idb":99}],93:[function(require,module,exports){
+},{"@firebase/component":94,"@firebase/logger":96,"@firebase/util":97,"idb":100}],94:[function(require,module,exports){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -31187,7 +31336,7 @@ class ComponentContainer {
 }
 exports.ComponentContainer = ComponentContainer;
 
-},{"@firebase/util":96}],94:[function(require,module,exports){
+},{"@firebase/util":97}],95:[function(require,module,exports){
 (function (process){(function (){
 "use strict";Object.defineProperty(exports,"__esModule",{value:true});exports._TEST_ACCESS_hijackHash=exports._TEST_ACCESS_forceRestClient=exports._ReferenceImpl=exports._QueryParams=exports._QueryImpl=exports.TransactionResult=exports.QueryConstraint=exports.OnDisconnect=exports.Database=exports.DataSnapshot=void 0;exports._repoManagerDatabaseFromApp=repoManagerDatabaseFromApp;exports._setSDKVersion=setSDKVersion;exports._validateWritablePath=exports._validatePathString=void 0;exports.child=child;exports.connectDatabaseEmulator=connectDatabaseEmulator;exports.enableLogging=enableLogging;exports.endAt=endAt;exports.endBefore=endBefore;exports.equalTo=equalTo;exports.forceLongPolling=forceLongPolling;exports.forceWebSockets=forceWebSockets;exports.get=get;exports.getDatabase=getDatabase;exports.goOffline=goOffline;exports.goOnline=goOnline;exports.increment=increment;exports.limitToFirst=limitToFirst;exports.limitToLast=limitToLast;exports.off=off;exports.onChildAdded=onChildAdded;exports.onChildChanged=onChildChanged;exports.onChildMoved=onChildMoved;exports.onChildRemoved=onChildRemoved;exports.onDisconnect=onDisconnect;exports.onValue=onValue;exports.orderByChild=orderByChild;exports.orderByKey=orderByKey;exports.orderByPriority=orderByPriority;exports.orderByValue=orderByValue;exports.push=push;exports.query=query;exports.ref=ref;exports.refFromURL=refFromURL;exports.remove=remove;exports.runTransaction=runTransaction;exports.serverTimestamp=serverTimestamp;exports.set=set;exports.setPriority=setPriority;exports.setWithPriority=setWithPriority;exports.startAfter=startAfter;exports.startAt=startAt;exports.update=update;var _app=require("@firebase/app");var _component=require("@firebase/component");var _util=require("@firebase/util");var _logger=require("@firebase/logger");const name="@firebase/database";const version="0.13.10";/**
  * @license
@@ -35167,7 +35316,7 @@ Connection;/**
  */exports._TEST_ACCESS_forceRestClient=forceRestClient;registerDatabase();
 
 }).call(this)}).call(this,require('_process'))
-},{"@firebase/app":92,"@firebase/component":93,"@firebase/logger":95,"@firebase/util":96,"_process":102}],95:[function(require,module,exports){
+},{"@firebase/app":93,"@firebase/component":94,"@firebase/logger":96,"@firebase/util":97,"_process":103}],96:[function(require,module,exports){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -35384,7 +35533,7 @@ function setUserLogHandler(logCallback, options) {
   }
 }
 
-},{}],96:[function(require,module,exports){
+},{}],97:[function(require,module,exports){
 (function (process,global){(function (){
 "use strict";
 
@@ -37461,7 +37610,7 @@ function getModularInstance(service) {
 }
 
 }).call(this)}).call(this,require('_process'),typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"_process":102}],97:[function(require,module,exports){
+},{"_process":103}],98:[function(require,module,exports){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -37499,7 +37648,7 @@ var version = "9.14.0";
  */
 (0, _app.registerVersion)(name, version, 'app');
 
-},{"@firebase/app":92}],98:[function(require,module,exports){
+},{"@firebase/app":93}],99:[function(require,module,exports){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -37517,7 +37666,7 @@ Object.keys(_database).forEach(function (key) {
   });
 });
 
-},{"@firebase/database":94}],99:[function(require,module,exports){
+},{"@firebase/database":95}],100:[function(require,module,exports){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -37614,7 +37763,7 @@ function getMethod(target, prop) {
   has: (target, prop) => !!getMethod(target, prop) || oldTraps.has(target, prop)
 }));
 
-},{"./wrap-idb-value.js":100}],100:[function(require,module,exports){
+},{"./wrap-idb-value.js":101}],101:[function(require,module,exports){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -37785,7 +37934,7 @@ function wrap(value) {
 const unwrap = value => reverseTransformCache.get(value);
 exports.u = unwrap;
 
-},{}],101:[function(require,module,exports){
+},{}],102:[function(require,module,exports){
 (function (global){(function (){
 /*!
     localForage -- Offline Storage, Improved
@@ -40605,7 +40754,7 @@ module.exports = localforage_js;
 });
 
 }).call(this)}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],102:[function(require,module,exports){
+},{}],103:[function(require,module,exports){
 // shim for using process in browser
 var process = module.exports = {};
 
@@ -40791,7 +40940,7 @@ process.chdir = function (dir) {
 };
 process.umask = function() { return 0; };
 
-},{}],103:[function(require,module,exports){
+},{}],104:[function(require,module,exports){
 let nextId = 1;
 
 class Node {
@@ -41170,7 +41319,7 @@ module.exports.PNGFS = class PNGFS {
     }
 }
 
-},{}],104:[function(require,module,exports){
+},{}],105:[function(require,module,exports){
 module.exports.stdlib = `
 /**
  * Sets the target framerate that the game should update at.
@@ -41311,4 +41460,4 @@ declare var D:boolean";
 
 `;
 
-},{}]},{},[91]);
+},{}]},{},[92]);

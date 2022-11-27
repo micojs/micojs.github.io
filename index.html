@@ -30,6 +30,39 @@
           box-sizing: border-box;
       }
 
+      .console {
+          overflow: auto;
+          background-color: #222;
+      }
+
+      .console .line {
+          position: relative;
+          border-bottom: 1px solid #444;
+          padding: 0 5px;
+      }
+
+      .console .line::after {
+          content: attr(time);
+          position: absolute;
+          right: 10px;
+          top: 0;
+          color: #444;
+          font-size: 0.7em;
+      }
+
+      .console .line.repeat::after {
+          content: attr(repeat);
+          position: absolute;
+          right: 0;
+          top: 0;
+          background-color: #44F;
+          border-radius: 5px;
+          margin: 3px;
+          font-size: 0.7em;
+          padding: 0 3px 0 3px;
+          color: white;
+      }
+
       #projectSelector {
           display: flex;
           flex-flow: row;
@@ -93,7 +126,7 @@
       }
 
       #leftbar, #tabcontainer {
-          height: 100%;
+          flex-grow: 1;
           padding: 0;
           margin: 0;
       }
@@ -109,12 +142,17 @@
           flex-flow: column;
       }
 
-      #tabcontainer {
+      #maincolumn {
           flex-basis: 100%;
           border-left: 1px solid #777;
           border-right: 1px solid #777;
           display: flex;
           flex-flow: column;
+      }
+
+      #consolecontainer {
+          flex-grow: 0;
+          height: 150px;
       }
 
       #treelist {
@@ -130,8 +168,9 @@
       }
 
       .treenode.active {
-          background: #DDD;
-          color: #333;
+          border-top: 1px solid #AAA;
+          border-bottom: 1px solid #AAA;
+          background-color: #555;
       }
 
       .tabset {
@@ -156,8 +195,9 @@
       }
 
       .tab {
-          padding: 0 0 0 15px;
+          padding: 0 15px 0 15px;
           cursor: pointer;
+          position: relative;
       }
 
       .tab.inactive {
@@ -173,6 +213,7 @@
       .tabcontainer {
           height: 100%;
           position: relative;
+          overflow: auto;
       }
 
       .tabclose {
@@ -188,6 +229,9 @@
           -webkit-transition: opacity 0.5s ease-in-out;
           -moz-transition: opacity 0.5s ease-in-out;
           transition: opacity 0.5s ease-in-out;
+
+          position: absolute;
+          right: 0;
       }
 
       .tab:hover .tabclose {
@@ -197,6 +241,24 @@
       .tabclose:hover {
           background: #AAA;
           color: #333;
+      }
+
+      #consolecontainer {
+          display: flex;
+          flex-direction: column;
+      }
+
+      #consolecontainer .tabset {
+          border-top: 1px solid #777;
+          padding-top: 5px;
+      }
+
+      .console {
+          background: #1e1e1e;
+          position: absolute;
+          width: 100%;
+          height: 100%;
+          overflow: auto;
       }
 
       #preview {
@@ -336,9 +398,9 @@
           </div>
           <div id="treelist" bind-dragenter="cancelEvent" bind-dragover="cancelEvent" bind-drop="dropFile"></div>
         </div>
-        <div id="tabcontainer" index-IDE="setupTabContainer"></div>
-        <div id="exports" class="hidden">
-          <img id="postresponse" name="postresponse">
+        <div id="maincolumn">
+          <div id="tabcontainer" index-IDE="setupTabContainer"></div>
+          <div id="consolecontainer" index-IDE="setupConsoleContainer"></div>
         </div>
       </div>
 
