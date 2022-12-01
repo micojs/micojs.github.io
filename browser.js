@@ -18,7 +18,7 @@ addEventListener('DOMContentLoaded', _=>{
         else if (event.code == "ArrowDown" || event.code == "KeyK") DOWN = true;
         else if (event.code == "ArrowLeft" || event.code == "KeyJ") LEFT = true;
         else if (event.code == "ArrowRight" || event.code == "KeyL") RIGHT = true;
-        else if (event.code == "KeyA" || event.code == "Control") A = true;
+        else if (event.code == "KeyA" || event.code == "KeyQ" || event.code == "Control") A = true;
         else if (event.code == "KeyS" || event.code == "Shift") B = true;
         else if (event.code == "KeyD" || event.code == "KeyZ") D = true;
         else if (event.code == "KeyF" || event.code == "KeyX") C = true;
@@ -29,7 +29,7 @@ addEventListener('DOMContentLoaded', _=>{
         else if (event.code == "ArrowDown" || event.code == "KeyK") DOWN = false;
         else if (event.code == "ArrowLeft" || event.code == "KeyJ") LEFT = false;
         else if (event.code == "ArrowRight" || event.code == "KeyL") RIGHT = false;
-        else if (event.code == "KeyA" || event.code == "Control") A = false;
+        else if (event.code == "KeyA" || event.code == "KeyQ" || event.code == "Control") A = false;
         else if (event.code == "KeyS" || event.code == "Shift") B = false;
         else if (event.code == "KeyD" || event.code == "KeyZ") D = false;
         else if (event.code == "KeyF" || event.code == "KeyX") C = false;

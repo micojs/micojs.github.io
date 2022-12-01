@@ -240,7 +240,7 @@ class Scope extends Expr {
     super();
     this.name = name;
     this.variables = [];
-    this.index = {};
+    this.index = Object.create(null);
     this.parent = null;
     this.children = [];
     this.method = null;
@@ -605,6 +605,40 @@ void JSupdate() {
 $[[minStringTable]]
 
 #include "espboy.hpp"
+
+$[[resources]]
+
+$[[translated]]
+
+void JSinit() {
+  {
+    js::Local args = js::arguments(0);
+    js::call($[[main]], args, false);
+    js::call($[[init]], args, false);
+  }
+  js::gc();
+}
+
+void JSupdate(uint32_t time, uint32_t updateCount) {
+  {
+    js::Local args = js::arguments(1);
+    js::set(args, V_0, time);
+    for (uint32_t i = 0; i < updateCount; ++i)
+      js::call($[[update]], args, false);
+    js::call($[[render]], args, false);
+  }
+  js::gc();
+}
+`,
+  meta: `
+#define RESOURCEREF(x) ((js::ResourceRef*)x)
+#define RESOURCEDECL(x) const uint8_t x[]
+#define PRINT(str) Serial.print((const char*)str)
+#define PRINTLN() Serial.print("\\n");
+#define STRDECL(VAR, LEN, STR) __attribute__ ((aligned)) const std::array<uint8_t, sizeof(js::Buffer) + LEN> VAR = js::bufferFrom<LEN>(STR);
+$[[minStringTable]]
+
+#include "meta.hpp"
 
 $[[resources]]
 
@@ -1378,7 +1412,9 @@ class ProgramParser {
       clazz.add(new ir.Pop());
     }
     if (clazz.index["constructor"]) {
-      clazz.add(new ir.LookUp("constructor"));
+      const ctor = new ir.LookUp("constructor");
+      ctor.container = clazz;
+      clazz.add(ctor);
       clazz.add(new ir.CallExpression(0, true, true));
     }
   }
@@ -27224,7 +27260,8 @@ class Preview {
     const lcd = {
       pokitto: [220, 176],
       blit: [320, 240],
-      espboy: [128, 128]
+      espboy: [128, 128],
+      meta: [160, 128]
     };
     return lcd[platform];
   }
@@ -41253,6 +41290,98 @@ module.exports.PNGFS = class PNGFS {
 
 },{}],106:[function(require,module,exports){
 module.exports.stdlib = `
+
+/**
+ * Prints messages into the console for debugging
+ */
+declare function debug(...args):void;
+
+/**
+ * Returns a floating-point value between 0 (inclusive) and 1 (exclusive)
+ */
+declare function rand():number;
+
+/**
+ * Returns an integer value between 0 (inclusive) and max (exclusive)
+ */
+declare function rand(max:number):number;
+
+/**
+ * Returns a floating-point value between min (inclusive) and max (exclusive)
+ */
+declare function rand(min:number, max:number):number;
+
+/**
+ * Returns an integer value between min (inclusive) and max (exclusive)
+ */
+declare function rand(min:number, max:number, ignored:any):number;
+
+/**
+ * Returns the absolute value of value
+ */
+declare function abs(value:number):number;
+
+/**
+ * Returns value rounded down to the nearest integer
+ */
+declare function floor(value:number):number;
+
+/**
+ * Returns value rounded to the nearest integer
+ */
+declare function round(value:number):number;
+
+/**
+ * Returns value rounded up to the nearest integer
+ */
+declare function ceil(value:number):number;
+
+/**
+ * Returns the square root of value
+ */
+declare function sqrt(value:number):number;
+
+/**
+ * Returns the cosine of angle, given in radians
+ */
+declare function cos(angle:number):number;
+
+/**
+ * Returns the sine of angle, given in radians
+ */
+declare function sin(angle:number):number;
+
+/**
+ * Returns the arc tangent of y/x
+ */
+declare function atan2(y:number, x:number):number;
+
+/**
+ * Returns the arc tangent of angle, given in radians
+ */
+declare function tan(angle:number):number;
+
+
+/**
+ * Returns the lowest of the given values
+ */
+declare function min(...value):number;
+
+/**
+ * Returns the highest of the given values
+ */
+declare function max(...value):number;
+
+/**
+ * Returns the root of the sum of each argument squared
+ */
+declare function vectorLength(...args):number;
+
+/**
+ * Returns the difference between two angles given in radians
+ */
+declare function angleDifference(angleA, angleB):number
+
 /**
  * Sets the target framerate that the game should update at.
  */
@@ -41353,42 +41482,42 @@ declare function text(message:string, x?:number, y?:number):void;
 /**
  * True while button is pressed, false otherwise.
  */
-declare var UP:boolean;
+var UP:boolean;
 
 /**
  * True while button is pressed, false otherwise.
  */
-declare var DOWN:boolean;
+var DOWN:boolean;
 
 /**
  * True while button is pressed, false otherwise.
  */
-declare var LEFT:boolean;
+var LEFT:boolean;
 
 /**
  * True while button is pressed, false otherwise.
  */
-declare var RIGHT:booeanl;
+var RIGHT:boolean;
 
 /**
  * True while button is pressed, false otherwise.
  */
-declare var A:boolean;
+var A:boolean;
 
 /**
  * True while button is pressed, false otherwise.
  */
-declare var B:boolean;
+var B:boolean;
 
 /**
  * True while button is pressed, false otherwise.
  */
-declare var C:boolean;
+var C:boolean;
 
 /**
  * True while button is pressed, false otherwise.
  */
-declare var D:boolean";
+var D:boolean;
 
 `;
 
