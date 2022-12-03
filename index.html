@@ -344,7 +344,6 @@
           cursor: pointer;
       }
 
-
       .imageEditor {
           position: absolute;
           height: 100%;
@@ -373,7 +372,44 @@
       }
 
       .imageEditor.image #imgcontainer #img:hover {
-        opacity: 0;
+          opacity: 0;
+      }
+
+      .imageEditor.tilemap #imgcontainer #canvas {
+        z-index: 1;
+      }
+
+      .imageEditor.tileset #imgcontainer #img {
+          opacity: 0.75;
+      }
+
+      .imageEditor #sidebar>* {
+          display: none;
+      }
+
+      .imageEditor #sidebar #mode {
+          display: block;
+      }
+
+      .imageEditor.image #imageSidebar,
+      .imageEditor.tilemap #tilemapSidebar,
+      .imageEditor.tileset #tilesetSidebar {
+          display: flex;
+          flex-direction: column;
+      }
+
+      #sidebar .row {
+        display: flex;
+        flex-direction: row;
+        justify-content: space-evenly;
+      }
+
+      #sidebar .row.assign {
+        height: 32px;
+      }
+
+      #sidebar .row.assign canvas {
+        image-rendering: pixelated;
       }
     </style>
 
