@@ -149,10 +149,10 @@ function setPen(r, g, b){
     let closest;
 
     if (typeof r == 'number' && (g === undefined || b === undefined)) {
-        closest = r;
-        g = pal[r * 4 + 1];
-        b = pal[r * 4 + 2];
-        r = pal[r * 4 + 0];
+        closest = r & 0xFF;
+        g = pal[closest * 4 + 1];
+        b = pal[closest * 4 + 2];
+        r = pal[closest * 4 + 0];
     }
 
     _internal.pen = {

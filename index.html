@@ -129,6 +129,8 @@
 
       #leftbar, #tabcontainer {
           flex-grow: 1;
+          display: flex;
+          flex-direction: column;
           padding: 0;
           margin: 0;
       }
@@ -213,7 +215,7 @@
       }
 
       .tabcontainer {
-          height: 100%;
+          flex-grow: 1;
           position: relative;
           overflow: auto;
       }
@@ -341,6 +343,38 @@
           padding: 0 5px;
           cursor: pointer;
       }
+
+
+      .imageEditor {
+          position: absolute;
+          height: 100%;
+          width: 100%;
+          display: flex;
+          flex-direction: row;
+      }
+
+      .imageEditor #sidebar {
+          position: relative;
+          flex-grow: 0;
+          width: 320px;
+          background: #1e1e1e;
+          border-left: 1px solid #777;
+      }
+
+      .imageEditor #imgcontainer {
+          position: relative;
+          flex-grow: 1;
+          overflow: auto;
+      }
+
+      .imageEditor #imgcontainer > * {
+          position: absolute;
+          image-rendering: pixelated;
+      }
+
+      .imageEditor.image #imgcontainer #img:hover {
+        opacity: 0;
+      }
     </style>
 
     <script src="index.min.js?nc=2"></script>
@@ -396,6 +430,7 @@
             </div>
           </div>
           <div id="fileops">
+            <button id="delFile" bind-click="deleteFile">Delete</button>
             <button id="newFile" bind-click="createFile">+File</button>
             <button id="newDir" bind-click="createDir">+Dir</button>
           </div>
