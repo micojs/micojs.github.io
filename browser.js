@@ -8,7 +8,7 @@ const _internal = {
     recolor: 0,
     mirrored: false,
     flipped: false,
-    transparent: false,
+    transparent: true,
     texture: null
 };
 
@@ -356,6 +356,7 @@ function blitInternal(x, y, angle, scale) {
     let srci = 2;
     let sign = 1;
     const recolor = _internal.recolor;
+    const transparent = _internal.transparent;
     if (_internal.mirrored) {
         srci += width - 1;
         sign = -1;
@@ -378,7 +379,7 @@ function blitInternal(x, y, angle, scale) {
                 continue;
             }
             let pixel = source[srci + ty * stride + tx * sign];
-            if (pixel)
+            if (!transparent || pixel)
                 fb[fbi + x] = palette[(pixel + recolor) & 0xFF];
         }
     }
@@ -419,6 +420,44 @@ function image(...args){
         break;
     }
     return
+}
+
+function rect(x, y, w, h) {
+    x |= 0;
+    y |= 0;
+    w |= 0;
+    h |= 0;
+    const fb = _internal.framebuffer;
+
+    if (x < 0) {
+        w += x;
+        x = 0;
+    }
+    if (y < 0) {
+        h += y;
+        y = 0;
+    }
+    if (x + w >= fb.width) {
+        w = fb.width - x;
+    }
+    if (y + h >= fb.height) {
+        h = fb.height - y;
+    }
+    if (w <= 0 || h <= 0) {
+        return;
+    }
+
+    h += y;
+    const pen = _internal.pen;
+    for (; y < h; ++y) {
+        let j = (y * fb.width + x) * 4;
+        for (let i = 0; i < w; ++i) {
+            fb.data[j++] = pen.r;
+            fb.data[j++] = pen.g;
+            fb.data[j++] = pen.b;
+            fb.data[j++] = 255;
+        }
+    }
 }
 
 function text(str, x, y){
