@@ -1,425 +1,464 @@
 <!doctype html>
 <html>
   <head>
-    <style>
-      html, body, #main, #main>* {
-          width: 100%;
-          height: 100%;
-          margin: 0px;
-          padding: 0px;
-          position: absolute;
-          overflow: hidden;
-      }
+      <style>
+       html, body, #main, #main>* {
+           width: 100%;
+           height: 100%;
+           margin: 0px;
+           padding: 0px;
+           position: absolute;
+           overflow: hidden;
+       }
 
-      #main {
-          background: #101010;
-          color: #FFFFFF;
-          font-family: Menlo, Monaco, "Courier New", monospace;
-          font-size: 0.8em;
-      }
+       #main {
+           background: #101010;
+           color: #FFFFFF;
+           font-family: Menlo, Monaco, "Courier New", monospace;
+           font-size: 0.8em;
+       }
 
-      #ide {
-          display: flex;
-          flex-flow: row;
-      }
+       #ide {
+           display: flex;
+           flex-flow: row;
+       }
 
-      #top {
-          display: flex;
-          flex-flow: column;
-          padding: 10px;
-          box-sizing: border-box;
-      }
+       #top {
+           display: flex;
+           flex-flow: column;
+           padding: 10px;
+           box-sizing: border-box;
+       }
 
-      .console {
-          overflow: auto;
-          background-color: #222;
-      }
+       .console {
+           overflow: auto;
+           background-color: #222;
+       }
 
-      .console .line {
-          position: relative;
-          border-bottom: 1px solid #444;
-          padding: 0 5px;
-          overflow: hidden;
-          text-overflow: ellipsis;
-      }
+       .console .line {
+           position: relative;
+           border-bottom: 1px solid #444;
+           padding: 0 5px;
+           overflow: hidden;
+           text-overflow: ellipsis;
+       }
 
-      .console .line::after {
-          content: attr(time);
-          position: absolute;
-          right: 10px;
-          top: 0;
-          color: #444;
-          font-size: 0.7em;
-      }
+       .console .line::after {
+           content: attr(time);
+           position: absolute;
+           right: 10px;
+           top: 0;
+           color: #444;
+           font-size: 0.7em;
+       }
 
-      .console .line.repeat::after {
-          content: attr(repeat);
-          position: absolute;
-          right: 0;
-          top: 0;
-          background-color: #44F;
-          border-radius: 5px;
-          margin: 3px;
-          font-size: 0.7em;
-          padding: 0 3px 0 3px;
-          color: white;
-      }
+       .console .line.repeat::after {
+           content: attr(repeat);
+           position: absolute;
+           right: 0;
+           top: 0;
+           background-color: #44F;
+           border-radius: 5px;
+           margin: 3px;
+           font-size: 0.7em;
+           padding: 0 3px 0 3px;
+           color: white;
+       }
 
-      #projectSelector {
-          display: flex;
-          flex-flow: row;
-          flex-wrap: wrap;
-          overflow: auto;
-          justify-content: space-around;
-      }
+       #projectSelector {
+           display: flex;
+           flex-flow: row;
+           flex-wrap: wrap;
+           overflow: auto;
+           justify-content: space-around;
+       }
 
-      h1 {
-          margin: 0;
-          display: flex;
-          flex-direction: column;
-          justify-content: center;
-          overflow: hidden;
-          text-overflow: ellipsis;
-      }
+       h1 {
+           margin: 0;
+           display: flex;
+           flex-direction: column;
+           justify-content: center;
+           overflow: hidden;
+           text-overflow: ellipsis;
+       }
 
-      #newProjects, .projectSelectorRow {
-          display: flex;
-          flex-flow: row;
-          height: 38px;
-          padding: 5px 0;
-      }
+       #newProjects, .projectSelectorRow {
+           display: flex;
+           flex-flow: row;
+           height: 38px;
+           padding: 5px 0;
+       }
 
-      .projectSelectorRow {
-          position: relative;
-          background-color: #222;
-          border: 1px solid #444;
-          width: 320px;
-          height: 240px;
-          box-sizing: border-box;
-          margin: 10px;
-      }
+       .projectSelectorRow {
+           position: relative;
+           background-color: #222;
+           border: 1px solid #444;
+           width: 320px;
+           height: 240px;
+           box-sizing: border-box;
+           margin: 10px;
+       }
 
-      .projectSelectorRow .nameLabel {
-          font-size: 1.4em;
-          padding: 10px;
-          overflow: hidden;
-          text-overflow: ellipsis;
-      }
+       .projectSelectorRow .nameLabel {
+           font-size: 1.4em;
+           padding: 10px;
+           overflow: hidden;
+           text-overflow: ellipsis;
+       }
 
-      .projectSelectorRow .openProject, .projectSelectorRow .deleteProject {
-          display: flex;
-          justify-content: center;
-          position: absolute;
-          width: 30%;
-          height: 38px;
-          right: 10px;
-          bottom: 62px;
-      }
+       .projectSelectorRow .openProject, .projectSelectorRow .deleteProject {
+           display: flex;
+           justify-content: center;
+           position: absolute;
+           width: 30%;
+           height: 38px;
+           right: 10px;
+           bottom: 62px;
+       }
 
-      .projectSelectorRow .deleteProject {
-          bottom: 10px;
-      }
-      .projectSelectorRow .deleteProject:hover {
-          background: red;
-      }
+       .projectSelectorRow .deleteProject {
+           bottom: 10px;
+       }
+       .projectSelectorRow .deleteProject:hover {
+           background: red;
+       }
 
-      #newProjects #newprojectname {
-          flex-grow: 1;
-      }
+       #newProjects #newprojectname {
+           flex-grow: 1;
+       }
 
-      #leftbar, #tabcontainer {
-          flex-grow: 1;
-          display: flex;
-          flex-direction: column;
-          padding: 0;
-          margin: 0;
-      }
+       #leftbar, #tabcontainer {
+           flex-grow: 1;
+           display: flex;
+           flex-direction: column;
+           padding: 0;
+           margin: 0;
+       }
 
-      .hidden {
-          display: none !important;
-      }
+       .hidden {
+           display: none !important;
+       }
 
-      #leftbar {
-          min-width: 320px;
-          flex-shrink: 0;
-          display: flex;
-          flex-flow: column;
-      }
+       .overlay {
+           position: absolute;
+           top: 0;
+           left: 0;
+           width: 100%;
+           height: 100%;
+           background: rgba(0, 0, 0, 0.75);
+           z-index: 1;
+       }
 
-      #maincolumn {
-          flex-basis: 100%;
-          border-left: 1px solid #777;
-          border-right: 1px solid #777;
-          display: flex;
-          flex-flow: column;
-      }
+       #leftbar {
+           min-width: 320px;
+           flex-shrink: 0;
+           display: flex;
+           flex-flow: column;
+       }
 
-      #consolecontainer {
-          flex-grow: 0;
-          height: 150px;
-      }
+       #maincolumn {
+           flex-basis: 100%;
+           border-left: 1px solid #777;
+           border-right: 1px solid #777;
+           display: flex;
+           flex-flow: column;
+       }
 
-      #treelist {
-          overflow: auto;
-          flex-basis: 100%;
-      }
+       #consolecontainer {
+           flex-grow: 0;
+           height: 150px;
+       }
 
-      .treenode {
-      }
+       #treelist {
+           overflow: auto;
+           flex-basis: 100%;
+       }
 
-      .treenode .filelabel {
-          cursor: pointer;
-      }
+       .treenode {
+       }
 
-      .treenode.active {
-          border-top: 1px solid #AAA;
-          border-bottom: 1px solid #AAA;
-          background-color: #555;
-      }
+       .treenode .filelabel {
+           cursor: pointer;
+       }
 
-      .tabset {
-          height: 20px;
-          background: #101010;
-          position: relative;
-          display: flex;
-      }
+       .treenode.active {
+           border-top: 1px solid #AAA;
+           border-bottom: 1px solid #AAA;
+           background-color: #555;
+       }
 
-      .tabset::after {
-          content: ' ';
-          width: 100%;
-          border-bottom: 1px solid #777;
-          box-sizing: border-box;
-      }
+       .tabset {
+           height: 20px;
+           background: #101010;
+           position: relative;
+           display: flex;
+       }
 
-      .tabset::before {
-          content: ' ';
-          width: 10px;
-          border-bottom: 1px solid #777;
-          box-sizing: border-box;
-      }
+       .tabset::after {
+           content: ' ';
+           width: 100%;
+           border-bottom: 1px solid #777;
+           box-sizing: border-box;
+       }
 
-      .tab {
-          padding: 0 15px 0 15px;
-          cursor: pointer;
-          position: relative;
-      }
+       .tabset::before {
+           content: ' ';
+           width: 10px;
+           border-bottom: 1px solid #777;
+           box-sizing: border-box;
+       }
 
-      .tab.inactive {
-          border-bottom: 1px solid #777;
-      }
+       .tab {
+           padding: 0 15px 0 15px;
+           cursor: pointer;
+           position: relative;
+       }
 
-      .tab.active {
-          border: 1px solid #777;
-          border-bottom: 0;
-          background: #1e1e1e;
-      }
+       .tab.inactive {
+           border-bottom: 1px solid #777;
+       }
 
-      .tabcontainer {
-          flex-grow: 1;
-          position: relative;
-          overflow: auto;
-      }
+       .tab.active {
+           border: 1px solid #777;
+           border-bottom: 0;
+           background: #1e1e1e;
+       }
 
-      .tabclose {
-          font-size: 0.85em;
-          padding: 2px;
-          color: #733;
-          cursor: pointer;
-          border: 1px solid transparent;
-          margin-left: 2px;
-          box-sizing: border-box;
+       .tabcontainer {
+           flex-grow: 1;
+           position: relative;
+           overflow: auto;
+       }
 
-          opacity: 0;
-          -webkit-transition: opacity 0.5s ease-in-out;
-          -moz-transition: opacity 0.5s ease-in-out;
-          transition: opacity 0.5s ease-in-out;
+       .tabclose {
+           font-size: 0.85em;
+           padding: 2px;
+           color: #733;
+           cursor: pointer;
+           border: 1px solid transparent;
+           margin-left: 2px;
+           box-sizing: border-box;
 
-          position: absolute;
-          right: 0;
-      }
+           opacity: 0;
+           -webkit-transition: opacity 0.5s ease-in-out;
+           -moz-transition: opacity 0.5s ease-in-out;
+           transition: opacity 0.5s ease-in-out;
 
-      .tab:hover .tabclose {
-          opacity: 1;
-      }
+           position: absolute;
+           right: 0;
+       }
 
-      .tabclose:hover {
-          background: #AAA;
-          color: #333;
-      }
+       .tab:hover .tabclose {
+           opacity: 1;
+       }
 
-      #consolecontainer {
-          display: flex;
-          flex-direction: column;
-      }
+       .tabclose:hover {
+           background: #AAA;
+           color: #333;
+       }
 
-      #consolecontainer .tabset {
-          border-top: 1px solid #777;
-          padding-top: 5px;
-      }
+       #consolecontainer {
+           display: flex;
+           flex-direction: column;
+       }
 
-      .console {
-          background: #1e1e1e;
-          position: absolute;
-          width: 100%;
-          height: 100%;
-          overflow: auto;
-      }
+       #consolecontainer .tabset {
+           border-top: 1px solid #777;
+           padding-top: 5px;
+       }
 
-      #preview {
-          display: flex;
-          flex-flow: column;
-      }
+       .console {
+           background: #1e1e1e;
+           position: absolute;
+           width: 100%;
+           height: 100%;
+           overflow: auto;
+       }
 
-      #previewcontrols {
-          display: flex;
-          flex-flow: row;
-          height: 38px;
-          justify-content: center;
-          border-bottom: 1px solid #777;
-          border-top: 1px solid #777;
-          background: #1e1e1e;
-          padding: 5px 0;
-      }
+       #preview {
+           display: flex;
+           flex-flow: column;
+       }
 
-      #projectcontrols {
-          border-bottom: 1px solid #777;
-          background: #1e1e1e;
-          height: 42px;
-          flex-grow: 0;
-          box-sizing: border-box;
-          display: flex;
-          flex-flow: row;
-          padding: 4px;
-      }
-      
-      select, input, button {
-          background-color: inherit;
-          border: 1px solid transparent;
-          color: #FFF;
-          padding: 10px;
-          box-sizing: border-box;
-          line-height: 100%;
-      }
+       #previewcontrols {
+           display: flex;
+           flex-flow: row;
+           height: 38px;
+           justify-content: center;
+           border-bottom: 1px solid #777;
+           border-top: 1px solid #777;
+           background: #1e1e1e;
+           padding: 5px 0;
+       }
 
-      input {
-          border-bottom: 1px solid #444;
-      }
-      
-      .previewbutton {
-          padding: 12px 10px;
-          box-sizing: border-box;
-          border: 1px solid transparent;
-      }
+       #projectcontrols {
+           border-bottom: 1px solid #777;
+           background: #1e1e1e;
+           height: 42px;
+           flex-grow: 0;
+           box-sizing: border-box;
+           display: flex;
+           flex-flow: row;
+           padding: 4px;
+       }
 
-      button:hover, select:hover, .previewbutton:hover {
-          border: 1px solid #777;
-          background: #444;
-      }
+       select, input, button {
+           background-color: inherit;
+           border: 1px solid transparent;
+           color: #FFF;
+           padding: 10px;
+           box-sizing: border-box;
+           line-height: 100%;
+       }
 
-      #screencontainer {
-          position: relative;
-      }
+       input {
+           border-bottom: 1px solid #444;
+       }
 
-      #screen {
-          position: absolute;
-          border: 0 none;
-          margin: auto;
-          top: 0px;
-          left: 0px;
-          right: 0px;
-          bottom: 0px;
-          background: black;
-      }
+       .previewbutton {
+           padding: 12px 10px;
+           box-sizing: border-box;
+           border: 1px solid transparent;
+       }
 
-      #fileops {
-          display: flex;
-          flex-flow: row;
-          justify-content: right;
-          height: 20px;
-          flex-basis: 0;
-      }
+       button:hover, select:hover, .previewbutton:hover {
+           border: 1px solid #777;
+           background: #444;
+       }
 
-      #fileops>* {
-          padding: 0 5px;
-          cursor: pointer;
-      }
+       #screencontainer {
+           position: relative;
+       }
 
-      .imageEditor {
-          position: absolute;
-          height: 100%;
-          width: 100%;
-          display: flex;
-          flex-direction: row;
-      }
+       #screen {
+           position: absolute;
+           border: 0 none;
+           margin: auto;
+           top: 0px;
+           left: 0px;
+           right: 0px;
+           bottom: 0px;
+           background: black;
+       }
 
-      .imageEditor #sidebar {
-          position: relative;
-          flex-grow: 0;
-          width: 320px;
-          background: #1e1e1e;
-          border-left: 1px solid #777;
-      }
+       #fileops {
+           display: flex;
+           flex-flow: row;
+           justify-content: right;
+           height: 20px;
+           flex-basis: 0;
+       }
 
-      .imageEditor #imgcontainer {
-          position: relative;
-          flex-grow: 1;
-          overflow: auto;
-      }
+       #fileops>* {
+           padding: 0 5px;
+           cursor: pointer;
+       }
 
-      .imageEditor #imgcontainer > * {
-          position: absolute;
-          image-rendering: pixelated;
-      }
+       .imageEditor {
+           position: absolute;
+           height: 100%;
+           width: 100%;
+           display: flex;
+           flex-direction: row;
+       }
 
-      .imageEditor.image #imgcontainer #img:hover {
-          opacity: 0;
-      }
+       .popup {
+           position: absolute;
+           background-color: #333;
+           top:0;
+           left:0;
+           bottom:0;
+           right:0;
+           margin: auto;
+           display: flex;
+           flex-direction: row;
+           flex-wrap: wrap;
+           justify-content: space-evenly;
+           overflow: auto;
+       }
 
-      .imageEditor.tilemap #imgcontainer #canvas {
-        z-index: 1;
-      }
+       .selected {
+           outline: 4px solid #7AF;
+       }
 
-      .imageEditor.tileset #imgcontainer #img {
-          opacity: 0.75;
-      }
+       .imageEditor #sidebar {
+           position: relative;
+           flex-grow: 0;
+           width: 320px;
+           background: #1e1e1e;
+           border-left: 1px solid #777;
+           overflow: auto;
+       }
 
-      .imageEditor #sidebar>* {
-          display: none;
-      }
+       .imageEditor #imgcontainer {
+           position: relative;
+           flex-grow: 1;
+           overflow: auto;
+       }
 
-      .imageEditor #sidebar #mode {
-          display: block;
-      }
+       .imageEditor #imgcontainer > * {
+           position: absolute;
+           image-rendering: pixelated;
+       }
 
-      .imageEditor.image #imageSidebar,
-      .imageEditor.tilemap #tilemapSidebar,
-      .imageEditor.tileset #tilesetSidebar {
-          display: flex;
-          flex-direction: column;
-      }
+       .imageEditor.image #imgcontainer #img:hover {
+           opacity: 0;
+       }
 
-      #sidebar .row {
-        display: flex;
-        flex-direction: row;
-        justify-content: space-evenly;
-      }
+       .imageEditor.tilemap #imgcontainer #canvas {
+           z-index: 1;
+       }
 
-      #sidebar .row.assign {
-        height: 32px;
-      }
+       .imageEditor.tileset #imgcontainer #img {
+           opacity: 0.75;
+       }
 
-      #sidebar .row.assign canvas {
-        image-rendering: pixelated;
-      }
-    </style>
+       .imageEditor #sidebar>* {
+           display: none;
+       }
 
-    <script src="index.min.js?nc=2"></script>
-    <script>
-      var require = { paths: { vs: './monaco/vs' } };
-    </script>
-    <script src="./monaco/vs/loader.js"></script>
-    <script src="./monaco/vs/editor/editor.main.nls.js"></script>
-    <script src="./monaco/vs/editor/editor.main.js"></script>
+       .imageEditor #sidebar #mode {
+           display: block;
+       }
+
+       .imageEditor.image #imageSidebar,
+       .imageEditor.tilemap #tilemapSidebar,
+       .imageEditor.tileset #tilesetSidebar {
+           display: flex;
+           flex-direction: column;
+       }
+
+       #sidebar .row {
+           display: flex;
+           flex-direction: row;
+           justify-content: space-evenly;
+       }
+
+       #sidebar .row.assign {
+           height: 32px;
+           padding: 3px;
+       }
+
+       #sidebar .row.assign canvas {
+           image-rendering: pixelated;
+           box-sizing: border-box;
+           outline: 1px solid #777;
+           cursor: pointer;
+       }
+
+       .tile {
+           box-sizing: border-box;
+           margin: 2px;
+       }
+
+      </style>
+      <script src="index.min.js?nc=3"></script>
+      <script>
+       var require = { paths: { vs: './monaco/vs' } };
+      </script>
+      <script src="./monaco/vs/loader.js"></script>
+      <script src="./monaco/vs/editor/editor.main.nls.js"></script>
+      <script src="./monaco/vs/editor/editor.main.js"></script>
   </head>
   <body>
     <div id="main">

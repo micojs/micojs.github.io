@@ -26657,6 +26657,9 @@ class ImageEditor {
     canvas;
     ctx;
     imgData;
+    forceRedraw;
+
+    selectedTID;
 
     tilesetPath;
     tilesetMeta;
@@ -26671,11 +26674,11 @@ class ImageEditor {
         if (!this.metadata || typeof this.metadata != "object") {
             this.metadata = {mode:"image"};
         }
-        if (!this.metadata.image)
+        if (!this.metadata.image || typeof this.metadata.image != 'object')
             this.metadata.image = {};
-        if (!this.metadata.tilemap)
+        if (!this.metadata.tilemap || typeof this.metadata.tilemap != 'object')
             this.metadata.tilemap = {tileset:''};
-        if (!this.metadata.tileset)
+        if (!this.metadata.tileset || typeof this.metadata.tileset != 'object')
             this.metadata.tileset = {tilewidth:8, tileheight:8};
 
         this.#fs = fs;
@@ -26744,6 +26747,8 @@ class ImageEditor {
             dom(tileset, 'option', {value:path, textContent:path.replace(/.*\/|\..*/g, '')});
 
         tileset.value = oldValue;
+        this.tilesetData = null;
+        this.layout();
     }
 
     onload() {
@@ -26857,10 +26862,22 @@ class ImageEditor {
         }
     }
 
+    tilesetDimensions() {
+        const tilewidth = (this.tilesetData.tileset.tilewidth|0) || 8;
+        const tileheight = (this.tilesetData.tileset.tileheight|0) || 8;
+        return {
+            tilewidth,
+            tileheight,
+            tilesPerRow: ((this.tilesetImg.naturalWidth / tilewidth) | 0) || 1,
+            tilesPerCol: ((this.tilesetImg.naturalWidth / tileheight) | 0) || 1
+        };
+    }
+
     async layoutTilemap() {
         this.autozoom();
 
-        let force = false;
+        let forceRedraw = this.forceRedraw;
+        this.forceRedraw = false;
 
         if (this.tilesetPath != this.metadata.tilemap.tileset) {
             this.tilesetData = null;
@@ -26870,10 +26887,11 @@ class ImageEditor {
         if (!this.tilesetData) {
             this.tilesetData = JSON.parse(this.#fs.readFile(this.metadata.tilemap.tileset));
             this.tilesetPath = this.metadata.tilemap.tileset;
+            forceRedraw = true;
         }
 
         if (!this.tilesetImg) {
-            force = true;
+            forceRedraw = true;
             let imgName = this.metadata.tilemap.tileset.replace(/\.meta$/gi, '');
             let imgSrc = this.#fs.readFile(imgName);
             await new Promise((onload, onerror) => {
@@ -26881,16 +26899,14 @@ class ImageEditor {
             });
         }
 
-        if (!force)
+        if (!forceRedraw)
             return;
 
-        const tilewidth = (this.tilesetData.tilewidth|0) || 8;
-        const tileheight = (this.tilesetData.tileheight|0) || 8;
-        const tilesPerRow = (this.tilesetImg.naturalWidth / tilewidth) | 0;
-
+        const {tilewidth, tileheight, tilesPerRow, tilesPerCol} = this.tilesetDimensions();
         const img = this.#dom.img;
         this.initCanvas(img.naturalWidth, img.naturalHeight, img);
 
+        const canvas = this.#dom.canvas;
         canvas.width = img.naturalWidth * tilewidth;
         canvas.height = img.naturalHeight * tileheight;
 
@@ -26904,21 +26920,30 @@ class ImageEditor {
                 c |= this.imgData.data[i++];
                 c <<= 8;
                 c |= this.imgData.data[i++];
+
                 let A = this.imgData.data[i++];
                 if (A < 128)
                     continue;
+
                 c = c.toString(16);
-                let tid = this.metadata.tilemap['#' + c]|0;
-                if (tid == 0) {
-                    if (c in assign) {
-                        tid = assign[c];
-                    } else {
-                        tid = ntid++;
-                    }
-                }
-                assign[c] = tid;
+
+                let tdat = this.metadata.tilemap['#' + c];
+                if (!tdat || typeof tdat != 'object')
+                    this.metadata.tilemap['#' + c] = tdat = {};
+                assign[c] = tdat;
+
+                let tid = tdat.id;
+                if (tid === undefined)
+                    continue;
+
+                tid |= 0;
                 let tx = tid % tilesPerRow;
                 let ty = (tid / tilesPerRow) | 0;
+                if (ty >= tilesPerCol) {
+                    tdat.id = 0;
+                    continue;
+                }
+
                 this.ctx.drawImage(
                     this.tilesetImg,
                     tx * tilewidth, ty * tileheight, tilewidth, tileheight,
@@ -26928,21 +26953,70 @@ class ImageEditor {
         }
 
         let old = this.#dom.tilemapSidebar.querySelectorAll('.assign');
-        while (old.length)
-            old[0].remove();
+        for (let i = 0; i < old.length; ++i)
+            old[i].remove();
 
         for (let key in assign) {
             const row = dom(this.#dom.tilemapSidebar, {className:'row assign'}, [
                 [{style:{backgroundColor:'#' + '0'.repeat(6 - key.length) + key, width:'32px', flexGrow:0}}],
-                ['canvas', {width:tilewidth, height:tileheight, flexGrow:0}]
+                ['canvas', {width:tilewidth, height:tileheight, flexGrow:0, onclick:this.changeTileId.bind(this, key, assign[key])}],
+                ['input', {type:'number', value:assign[key].info|0, style:{flexGrow:1}, onchange:this.changeTileInfo.bind(this, key, assign[key])}]
             ]);
-            const tid = assign[key];
+            const tid = assign[key].id;
             const canvas = row.querySelector('canvas');
             const ctx = canvas.getContext('2d');
             let tx = tid % tilesPerRow;
             let ty = (tid / tilesPerRow) | 0;
             ctx.drawImage(this.tilesetImg, tx * tilewidth, ty * tileheight, tilewidth, tileheight, 0, 0, tilewidth, tileheight);
         }
+    }
+
+    changeTileId(key, obj) {
+        if (!this.tilesetImg)
+            return;
+        const {tilewidth, tileheight, tilesPerRow, tilesPerCol} = this.tilesetDimensions();
+        const canvases = [];
+        const parent = this.#dom.imageEditor[0];
+        const aspect = this.tilesetImg.naturalWidth / this.tilesetImg.naturalHeight;
+        const height = parent.clientHeight * 0.9 | 0;
+        const width = height * aspect | 0;
+        const popup = dom(parent, {
+            className:'overlay',
+            onclick:event=>{
+                if (event.target == popup)
+                    popup.remove();
+            }
+        }, [
+            [{className:'popup', style:{height:height + 'px', width:width + "px"}}]
+        ]);
+        const container = popup.querySelector('.popup');
+        for (let ty = 0; ty < tilesPerCol; ++ty) {
+            for (let tx = 0; tx < tilesPerRow; ++tx) {
+                const canvas = dom('canvas', {width:tilewidth, height:tileheight, className:'tile', onclick:setTID.bind(this, tx, ty)}, container);
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(this.tilesetImg, tx * tilewidth, ty * tileheight, tilewidth, tileheight, 0, 0, tilewidth, tileheight);
+                canvases.push(canvas);
+            }
+        }
+
+        setTID.call(this, obj.id % tilesPerRow, obj.id / tilesPerRow|0);
+
+        function setTID(tx, ty) {
+            const id = ty * tilesPerRow + tx;
+            canvases.forEach((canvas, i) => {
+                canvas.classList.toggle('selected', i == id)
+            });
+            if (id != obj.id) {
+                obj.id = id;
+                this.forceRedraw = true;
+                this.changeMeta();
+            }
+        }
+    }
+
+    changeTileInfo(key, obj, event) {
+        obj.info = event.target.value | 0;
+        this.dirty();
     }
 
     layoutTileset() {
@@ -26993,13 +27067,13 @@ class ImageEditor {
         this.metadata = {
             mode:dom.mode.value,
             image:{},
-            tilemap:{
+            tilemap:Object.assign(this.metadata.tilemap, {
                 tileset:dom.tileset.value
-            },
-            tileset:{
+            }),
+            tileset:Object.assign(this.metadata.tileset, {
                 tilewidth:tilewidth,
                 tileheight:tileheight
-            }
+            })
         };
 
         this.dirty();
@@ -27008,7 +27082,7 @@ class ImageEditor {
     }
 
     dirty() {
-        this.#fs.writeFile(this.path + ".meta", JSON.stringify(this.metadata));
+        this.#fs.writeFile(this.path + ".meta", JSON.stringify(this.metadata, 0, 4));
     }
 };
 
