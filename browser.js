@@ -187,12 +187,7 @@ function setPen(r, g, b){
 
     _internal.recolor = closest;
 
-    return {
-        r:r&0xFF,
-        g:g&0xFF,
-        b:b&0xFF,
-        a:255
-    };
+    return closest;
 }
 
 function setFont(font){
