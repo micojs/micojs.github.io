@@ -348,7 +348,7 @@ function blitInternal(x, y, angle, scale) {
 
     let fb = new Uint32Array(_internal.framebuffer.data.buffer);
     let fbi = minY * screenWidth;
-    let srci = 2;
+    let srci = 4;
     let sign = 1;
     const recolor = _internal.recolor;
     const transparent = _internal.transparent;
