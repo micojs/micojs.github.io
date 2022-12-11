@@ -565,7 +565,7 @@ void JSupdate(uint32_t time) {
 }
 `,
   pokitto: `
-#define RESOURCEREF(x) ((js::ResourceRef*)res::x)
+#define RESOURCEREF(x) ((js::ResourceRef*)resource::x)
 #define RESOURCEDECL(x) const uint8_t x[]
 #define PRINT(str) LOG((const char*)(str))
 #define PRINTLN() LOG("\\n");
@@ -575,7 +575,7 @@ $[[minStringTable]]
 
 #include "api.h"
 
-namespace res {
+namespace resource {
 $[[resources]]
 }
 
@@ -637,7 +637,7 @@ void JSupdate(uint32_t time, uint32_t updateCount) {
 }
 `,
   meta: `
-#define RESOURCEREF(x) ((js::ResourceRef*)x)
+#define RESOURCEREF(x) ((js::ResourceRef*)res::x)
 #define RESOURCEDECL(x) const uint8_t x[]
 #define PRINT(str) SerialUSB.print((const char*)str)
 #define PRINTLN() SerialUSB.print("\\n");
@@ -646,7 +646,9 @@ $[[minStringTable]]
 
 #include "meta.hpp"
 
+namespace res {
 $[[resources]]
+}
 
 $[[translated]]
 
@@ -1140,7 +1142,7 @@ Object.defineProperty(exports, "__esModule", {
 exports.dataProg = dataProg;
 function dataProg(ast, program, filename, jsc) {
   const name = filename.split('/').pop().split('.')[0];
-  console.log('Adding resource ', name, ast);
+  // console.log('Adding resource ', name, ast);
   program.resourceData[name] = ast;
   return program;
 }
@@ -1696,7 +1698,7 @@ const writers = {
   js: _jsWriter.jsWriter
 };
 const transformers = {
-  js: [print, _esProg.esAST, _esProg.esProg],
+  js: [_esProg.esAST, _esProg.esProg],
   raw: [_dataProg.dataProg]
 };
 class JSC {
@@ -25952,7 +25954,7 @@ image-rendering: pixelated;
 }
 </style>
 <script src="assets.js"></script>
-<script src="browser.js?nc=5"></script>
+<script src="browser.js?nc=6"></script>
 <script>
 ${code}
 </script>
@@ -26335,6 +26337,7 @@ class IDE {
       this.model.set(modelId, model);
     }
     let fs = new PNGFS(model.get('fs', null));
+    fs.rm('.R');
     model.onBeforeSave = _ => {
       model.set('fs', fs.toJSON());
     };
@@ -26552,7 +26555,7 @@ class IDE {
 "set platform ${platform}";
 "addSysCall setScreenMode setFPS setPen setFont setLED setTexture";
 "addSysCall setMirrored setFlipped setTransparent";
-"addSysCall getWidth getHeight";
+"addSysCall getWidth getHeight readByte";
 "addSysCall clear image text rect";
 "push globals UP DOWN LEFT RIGHT A B C D";
 "registerBuiltinResource fontMini fontTIC806x6 fontZXSpec fontAdventurer fontDonut fontDragon fontC64 fntC64UIGfx fontMonkey fontKarateka fontKoubit fontRunes fontTight fontTiny";
@@ -29430,6 +29433,7 @@ module.exports.Flash = Flash;
 
 },{"./samba.js":122,"./wordcopyapplet.js":124}],94:[function(require,module,exports){
 const {dom, index} = require('./dom.js');
+const {Model} = require('./Model.js');
 
 class TOP {
     #el;
@@ -29461,12 +29465,13 @@ class TOP {
               .trim()
               .replace(/[^a-zA-Z 0-9]+/, '')
               .substr(0, 18);
-        if (old != name)
-            this.#view.newprojectname.value = name;
+        // if (old != name)
+        //     this.#view.newprojectname.value = name;
         return name;
     }
 
-    newProject() {
+    async newProject() {
+        const rawName = this.#view.newprojectname.value.trim();
         const name = this.checkName();
         const newprojectname = this.#view.newprojectname;
         if (name.length == 0){
@@ -29488,6 +29493,17 @@ class TOP {
                 return;
             }
         }
+
+        const remote = this.#parent.remote;
+        // const remoteProject = await remote.loadProject(rawName);
+        // if (remoteProject) {
+        //     const modelId = 'project-' + id;
+        //     const projectModel = new Model();
+        //     projectModel.useStorage(modelId);
+        //     projectModel.set('fs', remoteProject.fs);
+        //     projectModel.set('RPIN', rawName);
+        //     this.#model.set(modelId, projectModel);
+        // }
 
         const project = {id, name};
         projectList.push(project);
@@ -29535,7 +29551,7 @@ class TOP {
 
 module.exports.TOP = TOP;
 
-},{"./dom.js":100}],95:[function(require,module,exports){
+},{"./Model.js":85,"./dom.js":100}],95:[function(require,module,exports){
 const {dom} = require('./dom.js');
 
 class TabContainer {
@@ -46098,6 +46114,10 @@ class Entry extends Node {
     unserialize(tree, name, node) {
         this.name = name;
         this.node = tree[node];
+        if (!this.node) {
+            this.node = new Directory();
+            this.node.id = node;
+        }
     }
 
     serialize(tree) {
@@ -47111,6 +47131,11 @@ declare function getWidth():number;
  * Returns the screen's height in pixels.
  */
 declare function getHeight():number;
+
+/**
+ * Reads a byte from a resource at the specified offset.
+ */
+declare function readByte(resource:Resource, offset?:number):number;
 
 /**
  * Returns the image's width in pixels.

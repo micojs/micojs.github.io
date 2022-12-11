@@ -208,6 +208,10 @@ function setFlipped(v) {_internal.flipped = !!v;}
 function setTransparent(v) {_internal.transparent = !!v;}
 function setRecolor(v) {_internal.recolor = v|0;}
 
+function readByte(arg, offset) {
+    return arg[offset|0];
+}
+
 function getWidth(texture){
     if (!texture)
         return _internal.framebuffer.width;
