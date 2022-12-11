@@ -126,7 +126,13 @@ const max = Math.max;
 function vectorLength() {
 }
 
-function angleDifference() {
+function angleDifference(x, y, c = Math.PI) {
+    // return mod(Math.abs(x - y) + c, 2 * c) - c;
+    let TAU = c * 2;
+    let a = mod(x - y, TAU);
+    let b = mod(y - x, TAU);
+    return a < b ? -a : b;
+    function mod(a, n) {return a - Math.floor(a / n) * n;}
 }
 
 function setScreenMode(){}
