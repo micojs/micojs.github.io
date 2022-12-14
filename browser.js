@@ -1,4 +1,4 @@
-var UP = false, DOWN = false, LEFT = false, RIGHT = false, A = false, B = false, C = false, D = false;
+var UP = false, DOWN = false, LEFT = false, RIGHT = false, A = false, B = false, C = false, D = false, FRAMETIME = 1;
 
 const _internal = {
     font:R.fontMini,
@@ -58,11 +58,13 @@ addEventListener('DOMContentLoaded', _=>{
                 } else {
                     updateCount += updateDelta;
                 }
+                let startUpdate = performance.now();
                 let partial = delta / updateDelta;
                 for (let i = 0; i < updateDelta; ++i)
                     update(now);
                 render(now);
                 ctx.putImageData(_internal.framebuffer, 0, 0);
+                FRAMETIME = ((performance.now() - startUpdate) | 0) || 1;
             }
         } finally {
             requestAnimationFrame(tick);

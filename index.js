@@ -406,14 +406,18 @@ class Method extends Scope {
     this.captured = undefined;
     this.returnable = true;
   }
-  guessObjectSize() {
-    let deref = Object.keys(this.index["this"].deref || {}).length;
-    let reg = {};
+  guessObjectSize(reg) {
+    reg = reg || new Set();
+    let deref = 0;
+    for (let key in this.index["this"].deref || {}) {
+      if (reg.has(key)) continue;
+      reg.add(key);
+      deref++;
+    }
     for (let key in this.index) {
       const method = this.index[key];
-      if (method.id in reg || !(method instanceof Method) || method.isClass) continue;
-      reg[method.id] = method;
-      deref += method.guessObjectSize();
+      if (!(method instanceof Method) || method.isClass) continue;
+      deref += method.guessObjectSize(reg);
     }
     return deref;
   }
@@ -26577,7 +26581,7 @@ class IDE {
 "addSysCall setMirrored setFlipped setTransparent";
 "addSysCall getWidth getHeight readByte";
 "addSysCall clear image text rect";
-"push globals UP DOWN LEFT RIGHT A B C D";
+"push globals UP DOWN LEFT RIGHT A B C D FRAMETIME";
 "registerBuiltinResource fontMini fontTIC806x6 fontZXSpec fontAdventurer fontDonut fontDragon fontC64 fntC64UIGfx fontMonkey fontKarateka fontKoubit fontRunes fontTight fontTiny";
 "include /source/main.js"
 `;
