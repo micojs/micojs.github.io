@@ -105,11 +105,12 @@ class Objekt extends Expr {
 }
 exports.Objekt = Objekt;
 class CallExpression extends Expr {
-  constructor(argc, isNew, isForward) {
+  constructor(argc, isNew, isForward, discardResult) {
     super();
     this.argc = argc;
     this.isNew = isNew;
     this.isForward = isForward;
+    this.discardResult = !!discardResult;
   }
   toJSON() {
     return {
@@ -252,6 +253,7 @@ class Scope extends Expr {
     this.returnable = false;
     this.debug = null;
     this.program = null;
+    this.temporaries = [];
     this.preEnter = undefined;
     this.enterCondition = undefined;
     this.failEnter = undefined;
@@ -541,7 +543,7 @@ $[[resources]]
 
 $[[translated]]
 
-void init() {
+void JSinit() {
   {
     js::Local args = js::arguments(0);
     js::call($[[main]], args, false);
@@ -550,22 +552,21 @@ void init() {
   js::gc();
 }
 
-void render(uint32_t time) {
-  {
-    js::Local args = js::arguments(1);
-    js::set(args, V_0, time);
-    js::call($[[render]], args, false);
-  }
-  js::gc();
+void JSrender(uint32_t time) {
+  PROFILER;
+  js::Local args = js::arguments(1);
+  js::set(args, V_0, time);
+  js::call($[[render]], args, false);
 }
 
-void JSupdate(uint32_t time) {
+void JSupdate(uint32_t time, uint32_t updateCount) {
+  PROFILER;
   {
     js::Local args = js::arguments(1);
     js::set(args, V_0, time);
-    js::call($[[update]], args, false);
+    for (uint32_t i = 0; i < updateCount; ++i)
+      js::call($[[update]], args, false);
   }
-  js::gc();
 }
 `,
   pokitto: `
@@ -601,7 +602,6 @@ void JSupdate() {
     js::call($[[update]], args, false);
     js::call($[[render]], args, false);
   }
-  js::gc();
 }
 `,
   espboy: `
@@ -637,7 +637,6 @@ void JSupdate(uint32_t time, uint32_t updateCount) {
       js::call($[[update]], args, false);
     js::call($[[render]], args, false);
   }
-  js::gc();
 }
 `,
   meta: `
@@ -666,6 +665,7 @@ void JSinit() {
 }
 
 void JSupdate(uint32_t time, uint32_t updateCount) {
+  PROFILER;
   {
     js::Local args = js::arguments(1);
     js::set(args, V_0, time);
@@ -673,7 +673,6 @@ void JSupdate(uint32_t time, uint32_t updateCount) {
       js::call($[[update]], args, false);
     js::call($[[render]], args, false);
   }
-  js::gc();
 }
 `
 };
@@ -718,6 +717,7 @@ function encode(node, reg) {
     case "LookUp":
       const ctx = node.container || node.parent;
       if (ctx instanceof ir.Var) {
+        ctx.read++;
         if (node.variable instanceof ir.Literal) {
           ctx.addDeref(node.variable.value);
           if (ctx == cpp.program.resources) {
@@ -873,7 +873,11 @@ class CPP {
       }
     }
     if (node instanceof ir.Method) {
-      decls.push(`js::initThis(${encode(node.index["this"])}, ${encode(node.args)}, ${node.guessObjectSize()}, isNew);`);
+      decls.unshift('PROFILER;');
+      const that = node.index["this"];
+      if (that.read || that.write) {
+        decls.push(`js::initThis(${encode(node.index["this"])}, ${encode(node.args)}, ${node.guessObjectSize()}, isNew);`);
+      }
     }
     return [before, children, after];
   }
@@ -935,6 +939,7 @@ class CPP {
       right = this.stack.pop();
     }
     if (ctx instanceof ir.Var) {
+      ctx.read++;
       if (lookup.variable instanceof ir.Literal) {
         ctx.addDeref(lookup.variable.value);
         ret.push(`js::set(${encode(ctx)}, ${encode(lookup.variable, true)}, ${encode(right)});`);
@@ -945,6 +950,7 @@ class CPP {
       let v = ctx.find(lookup.variable, true);
       if (!v) this.error(`Variable ${lookup.variable} not defined`);
       ret.push(`${encode(v)} = ${encode(right)};`);
+      v.write++;
     }
     this.stack.push(right);
     return ret; // `// assign ${lookup.variable} ${node.operator} ${right.constructor.name}`;
@@ -986,6 +992,7 @@ class CPP {
     const tmp = new ir.Var();
     node.parent.add(tmp);
     this.stack.push(tmp);
+    tmp.write++;
     const opName = {
       "+": "add",
       "-": "sub",
@@ -1024,6 +1031,7 @@ class CPP {
   Array(node) {
     const array = new ir.Var();
     this.method.add(array);
+    array.write++;
     const out = [];
     const values = [];
     const strarray = encode(array);
@@ -1038,6 +1046,7 @@ class CPP {
   Objekt(node) {
     const obj = new ir.Var();
     this.method.add(obj);
+    obj.write++;
     const out = [];
     const values = [];
     const strobj = encode(obj);
@@ -1057,10 +1066,16 @@ class CPP {
       const strcallee = encode(calleeLU);
       return `js::call(${strcallee}, ${encode(this.method.args)}, false);`;
     }
-    const args = new ir.Var();
-    const ret = new ir.Var();
-    this.method.add(args);
-    this.method.add(ret);
+    var args = this.method.temporaries.pop();
+    if (!args) {
+      args = new ir.Var();
+      this.method.add(args);
+    }
+    var ret;
+    if (!node.discardResult) {
+      ret = new ir.Var();
+      this.method.add(ret);
+    }
     const argv = [];
     const strargs = encode(args);
     for (let i = 0; i < node.argc; ++i) {
@@ -1078,7 +1093,9 @@ class CPP {
       argc++;
     }
     this.stack.push(ret);
-    return [`${strargs} = js::arguments(${argc});`, argv, `${encode(ret)} = js::call(${strcallee}, ${strargs}, ${node.isNew});`, `${strargs}.reset();`];
+    this.method.temporaries.push(args);
+    const assign = ret ? `${encode(ret)} = ` : '';
+    return [`${strargs} = js::arguments(${argc});`, argv, `${assign}js::call(${strcallee}, ${strargs}, ${node.isNew});`, `${strargs}.reset();`];
   }
   toString(platformName) {
     let minStringTable = Object.keys(this.minStringTable).map(s => `#define ${s} ${this.minStringTable[s]}`).join('\n');
@@ -1133,6 +1150,11 @@ function cppWriter(program, opts) {
       cpp.globals[v.id] = v;
     });
   }
+  if (Array.isArray(opts.strings)) {
+    opts.strings.forEach(str => {
+      literalToString(str, true);
+    });
+  }
   cpp.write(program);
   return cpp.toString(opts.platform);
 }
@@ -1170,6 +1192,7 @@ class ProgramParser {
     this.scope = null;
     this.location = new ir.Location();
     this.node = null;
+    this.discardResult = 0;
     this.scopeStack = [];
     this.parse = (node, ...args) => {
       const func = this[node.type];
@@ -1235,6 +1258,7 @@ class ProgramParser {
     }
   }
   BlockStatement(node, child = null) {
+    this.discardResult = 1;
     if (!child) {
       child = new ir.Scope();
       this.scope.add(child);
@@ -1251,6 +1275,7 @@ class ProgramParser {
     });
   }
   LabeledStatement(node, child) {
+    this.discardResult = 1;
     if (!child) child = new ir.Scope();
     child.name = node.label.name;
     this.parse(node.body, child);
@@ -1260,7 +1285,9 @@ class ProgramParser {
     this.scope.add(block);
     block.debug = 'if';
     this.push(block.addEnterCondition(), _ => {
+      this.discardResult = 0;
       this.parse(node.test);
+      this.discardResult = 1;
     });
     if (node.alternate) {
       this.push(block.addFailEnter(), _ => {
@@ -1277,7 +1304,9 @@ class ProgramParser {
     block.continuable = true;
     block.breakable = true;
     this.push(block.addEnterCondition(), _ => {
+      this.discardResult = 0;
       this.parse(node.test);
+      this.discardResult = 1;
     });
     this.push(block.addLoopCondition(), _ => {
       this.scope.add(new ir.Literal(true));
@@ -1351,7 +1380,9 @@ class ProgramParser {
       }
       if (node.test) {
         this.push(block.addEnterCondition(), _ => {
+          this.discardResult = 0;
           this.parse(node.test);
+          this.discardResult = 1;
         });
       }
       if (node.update) {
@@ -1371,7 +1402,9 @@ class ProgramParser {
     block.continuable = true;
     block.breakable = true;
     this.push(block.addLoopCondition(), _ => {
+      this.discardResult = 0;
       this.parse(node.test);
+      this.discardResult = 1;
     });
     this.push(block, _ => {
       this.parse(node.body, block);
@@ -1391,6 +1424,7 @@ class ProgramParser {
       this.error("redeclaration of " + prevInst.kind + " " + prevInst.name);
     }
     if (node.init) {
+      this.discardResult = 0;
       this.parse({
         type: "AssignmentExpression",
         operator: "=",
@@ -1401,6 +1435,7 @@ class ProgramParser {
         right: node.init
       });
       this.scope.add(new ir.Pop());
+      this.discardResult = 1;
     }
   }
   ClassDeclaration(node) {
@@ -1430,7 +1465,7 @@ class ProgramParser {
       const ctor = new ir.LookUp("constructor");
       ctor.container = clazz;
       clazz.add(ctor);
-      clazz.add(new ir.CallExpression(0, true, true));
+      clazz.add(new ir.CallExpression(0, true, true, this.discardResult));
     }
   }
   ClassBody(node) {
@@ -1438,6 +1473,7 @@ class ProgramParser {
   }
   EmptyStatement(node) {}
   AssignmentExpression(node) {
+    this.discardResult = 0;
     this.parse(node.left);
     this.parse(node.right);
     this.scope.add(new ir.Deref());
@@ -1448,10 +1484,12 @@ class ProgramParser {
       JSC.pragma(node.expression.value);
       return;
     }
+    this.discardResult = 1;
     this.parse(node.expression);
     this.scope.add(new ir.Pop());
   }
   ReturnStatement(node) {
+    this.discardResult = 0;
     if (node.argument) this.parse(node.argument);
     this.scope.add(new ir.Return(!!node.argument));
   }
@@ -1482,6 +1520,7 @@ class ProgramParser {
     this.scope.add(new ir.UnaryExpression(node.operator, node.prefix));
   }
   UpdateExpression(node) {
+    this.discardResult = 0;
     this.parse(node.argument);
     this.scope.add(new ir.UnaryExpression(node.operator, node.prefix));
   }
@@ -1528,12 +1567,14 @@ class ProgramParser {
     this.scope.add(new ir.BinaryExpression(node.computed ? "[]" : "."));
   }
   CallExpression(node, isNew) {
+    let discardResult = this.discardResult;
+    this.discardResult = 0;
     this.parse(node.callee);
     node.arguments.forEach(arg => {
       this.parse(arg);
       this.scope.add(new ir.Deref());
     });
-    this.scope.add(new ir.CallExpression(node.arguments.length, !!isNew));
+    this.scope.add(new ir.CallExpression(node.arguments.length, !!isNew, false, discardResult));
   }
   NewExpression(node) {
     this.CallExpression(node, true);
@@ -1553,18 +1594,40 @@ class ProgramParser {
     const method = new ir.Method(name || (node.id ? node.id.name : undefined));
     this.scope.add(method);
     this.push(method, _ => {
-      const argc = new ir.Var("var");
-      const args = new ir.Var("var", "arguments");
-      this.scope.add(argc);
-      this.scope.add(args);
-      this.scope.add(new ir.LookUp(argc.id));
-      this.scope.add(new ir.LookUp(args.id));
-      this.scope.add(new ir.LookUp(method.args.id));
-      this.scope.add(new ir.AssignmentExpression("="));
-      this.scope.add(new ir.Literal("length"));
-      this.scope.add(new ir.BinaryExpression("."));
-      this.scope.add(new ir.AssignmentExpression("="));
-      this.scope.add(new ir.Pop());
+      let needsArgc = false;
+      let needsArgs = false;
+      node.params.forEach((param, index) => {
+        if (param.type == "AssignmentPattern") {
+          needsArgc = true;
+        }
+        if (param.name == "arguments") {
+          needsArgs = true;
+        }
+      });
+      let args = method.args;
+      if (needsArgs) {
+        args = new ir.Var("var", "arguments");
+        this.scope.add(args);
+      }
+      const argc = needsArgc ? new ir.Var("var") : null;
+      if (argc) {
+        this.scope.add(argc);
+        this.scope.add(new ir.LookUp(argc.id));
+        this.scope.add(new ir.LookUp(args.id));
+        if (needsArgs) {
+          this.scope.add(new ir.LookUp(method.args.id));
+          this.scope.add(new ir.AssignmentExpression("="));
+        }
+        this.scope.add(new ir.Literal("length"));
+        this.scope.add(new ir.BinaryExpression("."));
+        this.scope.add(new ir.AssignmentExpression("="));
+        this.scope.add(new ir.Pop());
+      } else if (needsArgs) {
+        this.scope.add(new ir.LookUp(args.id));
+        this.scope.add(new ir.LookUp(method.args.id));
+        this.scope.add(new ir.AssignmentExpression("="));
+        this.scope.add(new ir.Pop());
+      }
       node.params.forEach((param, index) => {
         const variable = new ir.Var("var", param.name, this.getNodeLocation(param));
         if (param.type == "Identifier") {
@@ -1599,6 +1662,7 @@ class ProgramParser {
         }
         this.scope.add(variable);
       });
+      this.discardResult = 0;
       this.parse(node.body, method);
       if (node.expression) {
         this.scope.add(new ir.Deref());
@@ -26290,6 +26354,7 @@ const {
 const {
   ImageEditor
 } = require('./ImageEditor.js');
+// const {MusicEditor} = require('./MusicEditor.js');
 const {
   FS2Zip
 } = require('./FS2Zip.js');
@@ -26500,7 +26565,14 @@ class IDE {
       return new ImageEditor(parentElement, path, contents, this.#fs);
     },
     jpg: 'png'
+
+    // mod(parentElement, path, contents) {
+    //     return new MusicEditor(parentElement, path, contents, this.#fs);
+    // },
+
+    // xm:'mod'
   };
+
   openFile(path) {
     const shortPath = path.split('/').pop();
     if (this.#tabContainer.activate(shortPath)) {
@@ -26583,6 +26655,10 @@ class IDE {
 "addSysCall clear image text rect";
 "push globals UP DOWN LEFT RIGHT A B C D FRAMETIME";
 "registerBuiltinResource fontMini fontTIC806x6 fontZXSpec fontAdventurer fontDonut fontDragon fontC64 fntC64UIGfx fontMonkey fontKarateka fontKoubit fontRunes fontTight fontTiny";
+{
+  "ifeq platform blit";
+  "push strings hires lores hires_palette";
+}
 "include /source/main.js"
 `;
     this.#fs?.writeFile('/std.js', code);
