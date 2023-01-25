@@ -26556,6 +26556,28 @@ class IDE {
       };
 
       editor.onDidChangeModelContent(editor.commit);
+      editor.addAction({
+        id: 'save-action',
+        label: 'Save File',
+        keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS],
+        precondition: null,
+        keybindingContext: null,
+        // contextMenuGroupId: 'navigation',
+        // contextMenuOrder: 1.5,
+        run(editor) {}
+      });
+      editor.addAction({
+        id: 'execute',
+        label: 'Execute',
+        keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter],
+        precondition: null,
+        keybindingContext: null,
+        // contextMenuGroupId: 'navigation',
+        // contextMenuOrder: 1.5,
+        run: () => {
+          this.#preview.toggleRun();
+        }
+      });
       return editor;
     },
     meta: "js",
