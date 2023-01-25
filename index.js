@@ -26089,8 +26089,14 @@ class Console {
 
         window.addEventListener('message', event => {
             let msgs = filter(event.data);
-            if (!Array.isArray(msgs))
+            if (!Array.isArray(msgs)) {
+                if (typeof msgs == 'object' && msgs) {
+                    for (let key in msgs) {
+                        this[key](msgs[key]);
+                    }
+                }
                 return;
+            }
 
             let top = this.el.scrollTop;
 
@@ -26104,6 +26110,11 @@ class Console {
             if (this.onAppend)
                 this.onAppend();
         });
+    }
+
+    clear() {
+        while (this.el.children.length)
+            this.el.children[0].remove();
     }
 
     tween() {
@@ -26770,6 +26781,11 @@ class ${fileName} {
         this.#projectModel.flush();
         const fs = await PreBuild(this.#fs);
         const html = await Browser.build(fs, size);
+        postMessage({
+          log: {
+            clear: true
+          }
+        }, '*');
         this.model.set('previewProject', this.model.get('projectName'));
         this.model.set('previewHTML', html);
       } catch (ex) {
