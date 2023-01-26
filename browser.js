@@ -125,7 +125,14 @@ const tan = Math.tan;
 const min = Math.min;
 const max = Math.max;
 
-function vectorLength() {
+function vectorLength(...args) {
+    let len = args.length;
+    let ret = 0;
+    for (let i = 0; i < len; ++i) {
+        let v = parseFloat(args[i]) || 0;
+        ret += v * v;
+    }
+    return Math.sqrt(ret);
 }
 
 function angleDifference(x, y, c = Math.PI) {
