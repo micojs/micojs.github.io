@@ -124,6 +124,9 @@ const atan2 = Math.atan2;
 const tan = Math.tan;
 const min = Math.min;
 const max = Math.max;
+const PI = Math.PI;
+const HALF_PI = PI / 2;
+const TWO_PI = PI * 2;
 
 function vectorLength(...args) {
     let len = args.length;
