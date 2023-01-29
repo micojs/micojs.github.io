@@ -149,6 +149,10 @@ function angleDifference(x, y, c = Math.PI) {
 
 function setScreenMode(){}
 
+function getTime() {
+    return performance.now();
+}
+
 function setFPS(targetFPS) {
     targetFPS |= 0;
     _internal.updateFrequency = targetFPS ? 1000 / targetFPS : 0;

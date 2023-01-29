@@ -687,6 +687,8 @@ function literalToString(value, reg) {
       cpp.stringTable.push(ret);
     }
     ret = `js::BufferRef{stringTable[${pos}]}`;
+  } else if (value === null) {
+    ret = '(js::Object*){}';
   } else if ((value | 0) != value) {
     ret += 'f';
   } else {
@@ -27564,7 +27566,7 @@ class IDE {
 "set platform ${platform}";
 "addSysCall setScreenMode setFPS setPen setFont setLED setTexture";
 "addSysCall setMirrored setFlipped setTransparent";
-"addSysCall getWidth getHeight readByte";
+"addSysCall getWidth getHeight readByte getTime";
 "addSysCall clear image text rect";
 "push globals UP DOWN LEFT RIGHT A B C D FRAMETIME PI HALF_PI TWO_PI";
 "registerBuiltinResource fontMini fontTIC806x6 fontZXSpec fontAdventurer fontDonut fontDragon fontC64 fntC64UIGfx fontMonkey fontKarateka fontKoubit fontRunes fontTight fontTiny";
@@ -48005,6 +48007,11 @@ module.exports.stdlib = `
  * Prints messages into the console for debugging
  */
 declare function debug(...args):void;
+
+/**
+ * Returns the current timestamp in milliseconds
+ */
+declare function getTime():number;
 
 /**
  * Returns a floating-point value between 0 (inclusive) and 1 (exclusive)
