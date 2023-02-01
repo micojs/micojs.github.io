@@ -27613,10 +27613,6 @@ class IDE {
 "addSysCall clear image text rect";
 "push globals UP DOWN LEFT RIGHT A B C D FRAMETIME PI HALF_PI TWO_PI";
 "registerBuiltinResource fontMini fontTIC806x6 fontZXSpec fontAdventurer fontDonut fontDragon fontC64 fntC64UIGfx fontMonkey fontKarateka fontKoubit fontRunes fontTight fontTiny";
-{
-  "ifeq platform blit";
-  "push strings hires lores hires_palette";
-}
 "include /source/main.js"
 `;
     this.#fs?.writeFile('/std.js', code);
@@ -33902,6 +33898,13 @@ module.exports.loadExample = function loadExample(fs) {
     fs.mkdir('/source');
 
     fs.writeFile('/source/main.js', `
+"push title Game Title";
+"push author Your Name";
+"push description A MicoJS game";
+"set version v0.0.1";
+"set category game";
+"set url https://micojs.github.com";
+
 const bgColor = setPen(0, 0, 0);
 const txtColor = setPen(64, 128, 255);
 
