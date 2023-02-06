@@ -27698,7 +27698,11 @@ class IDE {
           if (editor) this.#tabContainer.close(editor.shortPath);
         }
       }
-      this.refreshTree();
+      let node = this.#treeNodes[reference.path];
+      if (node) {
+        node.remove();
+        delete this.#treeNodes[reference.path];
+      }
     }
   }
   createFile() {
@@ -30804,6 +30808,10 @@ class TreeListNode {
             ["div", {innerHTML:space + entry.name, className:"filelabel"}],
             ...children.map(child => (new TreeListNode(child, this.path + "/", cb, index)).dom)
         ]);
+    }
+
+    remove() {
+        this.dom.remove();
     }
 
     setActive(isActive) {
