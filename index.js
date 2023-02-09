@@ -589,7 +589,7 @@ class CPP {
     this.main = null;
     this.program = null;
     cpp = this;
-    ["", "buffer", "length", "__proto__", "this", "undefined", "[Object]", "[Resource]", "[Array]", "[Function]", "null", "true", "false", "this", "0", "1", "2", "3", "4", "5", "//new", "//method"].forEach(str => literalToString(str, true));
+    ["", "buffer", "length", "__proto__", "this", "undefined", "[Object]", "[Resource]", "[Array]", "[Function]", "null", "true", "false", "this", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32", "//new", "//method"].forEach(str => literalToString(str, true));
   }
   error(msg, location) {
     throw new ir.Error(msg, location);
@@ -736,7 +736,7 @@ class CPP {
     const lookup = this.stack.pop();
     if (lookup instanceof ir.LookUp) {
       const ctx = lookup.container || lookup.parent;
-      if (ctx instanceof ir.Var) {
+      if (ctx instanceof ir.Var || ctx instanceof ir.Literal) {
         const variable = new ir.Var();
         this.method.add(variable);
         this.stack.push(variable);
@@ -1127,6 +1127,7 @@ class ProgramParser {
     this.parse(node.body, child);
   }
   IfStatement(node, block) {
+    if (block && block.debug == 'if') block = null;
     block = block || new ir.Scope();
     this.scope.add(block);
     block.debug = 'if';
@@ -1172,6 +1173,8 @@ class ProgramParser {
       block.add(arr);
       const it = new ir.Var();
       block.add(it);
+      const max = new ir.Var();
+      block.add(max);
       let val;
       this.push(block.addPreEnter(), preEnter => {
         preEnter.add(new ir.LookUp(it.id));
@@ -1185,13 +1188,17 @@ class ProgramParser {
         this.parse(node.left);
         val = preEnter.find(node.left.declarations[0].id.name, true);
         if (!val) this.error("Could not find iterator " + node.left.declarations[0].id.name);
+        preEnter.add(new ir.LookUp(max.id));
+        preEnter.add(new ir.LookUp(arr.id));
+        preEnter.add(new ir.Deref());
+        preEnter.add(new ir.Literal("length"));
+        preEnter.add(new ir.BinaryExpression("."));
+        preEnter.add(new ir.AssignmentExpression("="));
+        preEnter.add(new ir.Pop());
       });
       this.push(block.addEnterCondition(), cond => {
         cond.add(new ir.LookUp(it.id));
-        cond.add(new ir.LookUp(arr.id));
-        cond.add(new ir.Deref());
-        cond.add(new ir.Literal("length"));
-        cond.add(new ir.BinaryExpression("."));
+        cond.add(new ir.LookUp(max.id));
         cond.add(new ir.BinaryExpression("<"));
       });
       this.push(block.addPreLoop(), preLoop => {
@@ -1325,6 +1332,97 @@ class ProgramParser {
     this.scope.add(new ir.Deref());
     this.scope.add(new ir.AssignmentExpression(node.operator));
   }
+  ConditionalExpression(node) {
+    let result = new ir.Var();
+    this.scope.add(result);
+    let block = new ir.Scope();
+    this.scope.add(block);
+    block.debug = 'op_?';
+    this.push(block.addEnterCondition(), _ => {
+      this.discardResult = 0;
+      this.parse(node.test);
+      this.discardResult = 1;
+    });
+    this.push(block.addFailEnter(), _ => {
+      this.discardResult = 0;
+      this.scope.add(new ir.LookUp(result.id));
+      this.parse(node.alternate);
+      this.scope.add(new ir.AssignmentExpression("="));
+      this.scope.add(new ir.Pop());
+      this.discardResult = 1;
+    });
+    this.push(block, _ => {
+      this.discardResult = 0;
+      this.scope.add(new ir.LookUp(result.id));
+      this.parse(node.consequent, block);
+      this.scope.add(new ir.AssignmentExpression("="));
+      this.scope.add(new ir.Pop());
+      this.discardResult = 1;
+    });
+    this.scope.add(new ir.LookUp(result.id));
+
+    /*
+    {
+    "type": "ConditionalExpression",
+    "test": {
+    "type": "Literal",
+    "value": 1,
+    "raw": "1",
+    "loc": {
+        "start": {
+            "line": 27,
+            "column": 12
+        },
+        "end": {
+            "line": 27,
+            "column": 13
+        }
+    }
+    },
+    "consequent": {
+    "type": "Literal",
+    "value": 2,
+    "raw": "2",
+    "loc": {
+        "start": {
+            "line": 27,
+            "column": 16
+        },
+        "end": {
+            "line": 27,
+            "column": 17
+        }
+    }
+    },
+    "alternate": {
+    "type": "Literal",
+    "value": 3,
+    "raw": "3",
+    "loc": {
+        "start": {
+            "line": 27,
+            "column": 20
+        },
+        "end": {
+            "line": 27,
+            "column": 21
+        }
+    }
+    },
+    "loc": {
+    "start": {
+        "line": 27,
+        "column": 12
+    },
+    "end": {
+        "line": 27,
+        "column": 21
+    }
+    }
+    } index.min.js:1:20923
+    */
+  }
+
   ExpressionStatement(node) {
     if (node.expression.type == "Literal" && typeof node.expression.value == "string") {
       JSC.pragma(node.expression.value);
@@ -27222,7 +27320,7 @@ function getMimeType(ext) {
 	".zir"			: "application/vnd.zul",
 	".zirz"			: "application/vnd.zul",
 	".zmm"			: "application/vnd.handheld-entertainment+xml"
-    }[ext.toLowerCase().trim()]);
+    }[ext.toLowerCase().trim()] || "application/octet-stream");
 }
 
 },{"file-saver":117,"jszip":123}],88:[function(require,module,exports){
