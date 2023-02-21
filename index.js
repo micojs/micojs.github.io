@@ -4,7 +4,7 @@
 Object.defineProperty(exports, "__esModule", {
   value: true
 });
-exports.Var = exports.UnaryExpression = exports.Scope = exports.Return = exports.Program = exports.Pop = exports.Objekt = exports.Method = exports.LookUp = exports.Location = exports.Literal = exports.Error = exports.Deref = exports.Continue = exports.CallExpression = exports.Break = exports.BinaryExpression = exports.AssignmentExpression = exports.Array = void 0;
+exports.Var = exports.UnaryExpression = exports.Scope = exports.Return = exports.Program = exports.Pop = exports.Objekt = exports.Method = exports.LookUp = exports.Location = exports.Literal = exports.Inline = exports.Error = exports.Deref = exports.Continue = exports.CallExpression = exports.Break = exports.BinaryExpression = exports.AssignmentExpression = exports.Array = void 0;
 exports.getUniqueId = getUniqueId;
 exports.getUniqueName = getUniqueName;
 let uniqueId = 1;
@@ -181,6 +181,20 @@ exports.LookUp = LookUp;
 class Literal extends Expr {
   constructor(value) {
     super();
+    this.declType = typeof value;
+    if (this.declType == "number") {
+      if ((value | 0) == value) {
+        this.declType = "int32_t";
+      } else {
+        this.declType = "Float";
+      }
+    }
+    if (this.declType == "boolean") {
+      this.declType = "bool";
+    }
+    this.type = this.declType;
+    this.hasCTV = true;
+    this.CTV = value;
     this.value = value;
   }
   toJSON() {
@@ -191,6 +205,20 @@ class Literal extends Expr {
   }
 }
 exports.Literal = Literal;
+class Inline {
+  constructor(backend, code, target) {
+    this.backend = backend;
+    this.code = code && typeof code.join == 'function' ? code.join(' ') : code + "";
+    this.target = target;
+  }
+  setProgram(prog) {}
+  toJSON() {
+    return {
+      constructor: this.constructor.name
+    };
+  }
+}
+exports.Inline = Inline;
 class Var {
   constructor(kind = "var", name = undefined, location = null) {
     this.id = getUniqueId();
@@ -203,6 +231,40 @@ class Var {
     this.read = 0;
     this.write = 0;
     this.program = null;
+    this.declType = null;
+    this.type = null;
+    this._hasCTV = false;
+    this._CTV = undefined;
+  }
+  get hasCTV() {
+    return this._hasCTV;
+  }
+  set hasCTV(value) {
+    if (this.kind == "const" && this._hasCTV) {
+      console.trace();
+      throw "setting hasCTV " + this._hasCTV + " " + value;
+    }
+    this._hasCTV = value;
+  }
+  get CTV() {
+    return this._CTV;
+  }
+  set CTV(value) {
+    if (this.kind == "const" && this._hasCTV) {
+      console.trace();
+      throw "double assign on const";
+    }
+    this._hasCTV = true;
+    this._CTV = value;
+  }
+  setType(type) {
+    if (this.declType != type) {
+      this.declType = null;
+    }
+    this.type = type;
+  }
+  setDeclType(type) {
+    this.declType = this.type = type;
   }
   setProgram(prog) {
     this.program = prog;
@@ -388,6 +450,9 @@ class Scope extends Expr {
     } else if (obj instanceof Expr) {
       this.children.push(obj);
       obj.parent = this;
+    } else if (obj instanceof Inline) {
+      this.children.push(obj);
+      obj.parent = this;
     } else {
       throw new Error("Internal Error: Can't add to scope: ", obj);
     }
@@ -401,11 +466,13 @@ class Method extends Scope {
     this.method = this;
     this.args = new Var();
     this.add(this.args);
-    this.add(new Var("const", "this"));
+    this.that = new Var("const", "this");
+    this.add(this.that);
     this.isNative = false;
     this.isClass = false;
     this.captures = undefined;
     this.captured = undefined;
+    this.caches = undefined;
     this.returnable = true;
   }
   guessObjectSize(reg) {
@@ -429,6 +496,19 @@ class Method extends Scope {
       args: this.args,
       isNative: this.isNative
     });
+  }
+  cached(name) {
+    if (!this.caches) {
+      this.caches = Object.create(null);
+    }
+    let ret = this.caches[name];
+    if (!ret) {
+      ret = this.caches[name] = new Var("cache");
+      ret.hasCTV = false;
+      this.add(ret);
+      ret.name = name;
+    }
+    return ret;
   }
   capture(ext) {
     let ret = new Var("capture", ext.name);
@@ -519,6 +599,38 @@ const platform = {
   espboy: _espboy.espboy,
   meta: _meta.meta
 };
+const binOpName = {
+  "+": "add",
+  "-": "sub",
+  "*": "mul",
+  "%": "mod",
+  "/": "div",
+  "<": "lt",
+  "<=": "leq",
+  ">": "gt",
+  ">=": "geq",
+  "!=": "neq",
+  "==": "eq",
+  "===": "seq",
+  "!==": "sneq",
+  "|": "or",
+  "&": "and",
+  "^": "xor",
+  "<<": "shl",
+  ">>": "shr",
+  ">>>": "sru",
+  "+=": "add",
+  "-=": "sub",
+  "*=": "mul",
+  "%=": "mod",
+  "/=": "div",
+  "|=": "or",
+  "&=": "and",
+  "^=": "xor",
+  "<<=": "shl",
+  ">>=": "shr",
+  ">>>=": "sru"
+};
 let cpp;
 function literalToString(value, reg) {
   let ret = value + '';
@@ -533,7 +645,7 @@ function literalToString(value, reg) {
   } else if (value === null) {
     ret = '(js::Object*){}';
   } else if ((value | 0) != value) {
-    ret += 'f';
+    ret = `js::Float(${ret}f)`;
   } else {
     ret = `int32_t(${ret})`;
   }
@@ -547,7 +659,7 @@ function literalToString(value, reg) {
   return ret;
 }
 function local(node) {
-  if (node instanceof ir.Literal) return `{${encode(node)}}`;
+  if (node instanceof ir.Literal) return `${encode(node)}`;
   return encode(node);
 }
 function encode(node, reg) {
@@ -556,6 +668,11 @@ function encode(node, reg) {
       if (node.isNative && node.name) return node.name;
     case "Var":
       if (cpp.globals[node.id]) return node.name;
+
+      // if (node.hasCTV) {
+      //     return literalToString(node.CTV, !!reg);
+      // }
+
       return node.name ? `_${node.id}/*${node.name}*/` : `_${node.id}`;
     case "Literal":
       return literalToString(node.value, !!reg);
@@ -582,6 +699,7 @@ class CPP {
     this.minStringTable = {};
     this.globals = {};
     this.stringTable = [];
+    this.header = [];
     this.out = [];
     this.method = null;
     this.indent = 0;
@@ -619,6 +737,16 @@ class CPP {
       return `STRDECL(_str${index}, ${size}, ${str});`;
     })]);
   }
+  Inline(node) {
+    if (node.backend === "cpp") {
+      if (node.target == "inline") {
+        return node.code;
+      }
+      if (node.target == "header") {
+        this.header.push(node.code);
+      }
+    }
+  }
   Break(node) {
     return `goto ${node.target.label('failEnter')}; // break`;
   }
@@ -639,14 +767,20 @@ class CPP {
     this.method = oldMethod;
   }
   declare(v) {
-    return v.kind == "capture" ? `js::Tagged& ${encode(v)} = *js::getTaggedPtr(js::to<js::Object*>(${encode(this.method.args)}), ${literalToString(v.name, true)}, true);` : v.isCaptured() ? `js::Tagged& ${encode(v)} = *js::set(${encode(this.method.context)}, ${literalToString(v.name, true)}, {});` : `js::Local ${encode(v)}; // ${v.kind}`;
+    return v.kind == "capture" ? `js::Tagged& ${encode(v)} = *js::getTaggedPtr(js::to<js::Object*>(${encode(this.method.args)}), ${literalToString(v.name, true)}, true);` : v.kind == "cache" ? `js::Tagged& ${encode(v)} = *js::getTaggedPtr(${encode(this.method.index["this"])}.object(), ${literalToString(v.name, true)}, true, true);` : v.isCaptured() ? `js::Tagged& ${encode(v)} = *js::set(${encode(this.method.context)}, ${literalToString(v.name, true)}, {});` : v.declType == "int32_t" ? `int32_t ${encode(v)}; // ${v.kind}` : v.declType == "uint32_t" ? `uint32_t ${encode(v)}; // ${v.kind}` : v.declType == "Float" ? `js::Float ${encode(v)}; // ${v.kind}` : v.declType == "string" ? `js::BufferRef ${encode(v)}; // ${v.kind}` : `js::Local ${encode(v)}; // ${v.kind} ${v.declType}`;
   }
   Scope(node, endWithReturn) {
     const decls = [];
     const setup = [];
     const before = [`// begin ${node.debug}`, node.transparent ? '' : '{', setup, decls];
     const after = [node.transparent ? '' : '}', `// end ${node.debug}`];
-    const children = node.children.map(child => this.write(child));
+    const children = [];
+    node.children.forEach(child => {
+      if (!(child instanceof ir.Method)) children.push(this.write(child));
+    });
+    node.children.forEach(child => {
+      if (child instanceof ir.Method) children.push(this.write(child));
+    });
     if (endWithReturn) {
       const lastChild = node.children[node.children.length - 1];
       let hasReturn = lastChild && lastChild instanceof ir.Return;
@@ -705,23 +839,26 @@ class CPP {
       setup.push(this.declare(node.context));
       setup.push(`${encode(node.context)} = js::alloc(${Object.keys(node.captured).length});`);
     }
+    if (node.that) {
+      setup.unshift(`PROFILER_NAMED("${this.method.name}");`);
+      const that = node.that;
+      varindex[that.id] = that;
+      if (that.read || that.write) {
+        setup.push(this.declare(that));
+        decls.push(`js::initThis(${encode(that)}, ${encode(node.args)}, ${node.guessObjectSize()}, isNew);`);
+      }
+    }
     const locals = node.index;
     for (let key in locals) {
       let v = locals[key];
       if (v.id in varindex || !(v instanceof ir.Var)) continue;
       varindex[v.id] = v;
       let decl = this.declare(v);
+      if (v.kind != "const") v.hasCTV = false;
       if (node == this.main && v.name) {
         this.out.unshift(decl);
       } else {
         decls.push(decl);
-      }
-    }
-    if (node instanceof ir.Method) {
-      decls.unshift('PROFILER;');
-      const that = node.index["this"];
-      if (that.read || that.write) {
-        decls.push(`js::initThis(${encode(node.index["this"])}, ${encode(node.args)}, ${node.guessObjectSize()}, isNew);`);
       }
     }
     return [before, children, after];
@@ -736,7 +873,10 @@ class CPP {
     const lookup = this.stack.pop();
     if (lookup instanceof ir.LookUp) {
       const ctx = lookup.container || lookup.parent;
-      if (ctx instanceof ir.Var || ctx instanceof ir.Literal) {
+      if (ctx === this.method.that && lookup.variable instanceof ir.Literal) {
+        ctx.read++;
+        this.stack.push(this.method.cached(lookup.variable.value));
+      } else if (ctx instanceof ir.Var || ctx instanceof ir.Literal) {
         const variable = new ir.Var();
         this.method.add(variable);
         this.stack.push(variable);
@@ -787,13 +927,24 @@ class CPP {
       ctx.read++;
       if (lookup.variable instanceof ir.Literal) {
         ctx.addDeref(lookup.variable.value);
-        ret.push(`js::set(${encode(ctx)}, ${encode(lookup.variable, true)}, ${encode(right)});`);
+        if (ctx == this.method.that) {
+          ctx.read++;
+          let v = this.method.cached(lookup.variable.value);
+          // v.setType(right.declType || right.type);
+          ret.push(`${encode(v)} = ${encode(right)};`);
+        } else {
+          ret.push(`js::set(${encode(ctx)}, ${encode(lookup.variable, true)}, ${encode(right)});`);
+        }
       } else {
         ret.push(`js::set(${encode(ctx)}, ${encode(lookup.variable)}, ${encode(right)});`);
       }
     } else if (ctx instanceof ir.Scope) {
       let v = ctx.find(lookup.variable, true);
       if (!v) this.error(`Variable ${lookup.variable} not defined`);
+      if (v.kind == "const") {
+        v.setDeclType(right.type);
+        if (right.hasCTV) v.CTV = right.CTV;
+      }
       ret.push(`${encode(v)} = ${encode(right)};`);
       v.write++;
     }
@@ -803,13 +954,12 @@ class CPP {
 
   UnaryExpression(node) {
     const lookup = this.stack.pop();
-    const tmp = new ir.Var();
-    node.parent.method.add(tmp);
     const opName = {
       true: {
         "++": "preinc",
         "--": "predec",
         "!": "not",
+        "~": "bitnot",
         "-": "neg",
         "+": "pos"
       },
@@ -818,8 +968,29 @@ class CPP {
         "--": "dec"
       }
     }[!!node.prefix][node.operator];
+    let tmp = new ir.Var();
+    if (opName == "bitnot") {
+      if (lookup.hasCTV) {
+        tmp = new ir.Literal(~lookup.value);
+      } else {
+        tmp.setDeclType("int32_t");
+      }
+    } else if (opName == "not") {
+      if (lookup.hasCTV) {
+        tmp = new ir.Literal(!lookup.value);
+      } else {
+        tmp.setDeclType("bool");
+      }
+    } else {
+      tmp.setDeclType("Float");
+    }
     this.stack.push(tmp);
-    return `js::op_${opName}(${encode(tmp)}, ${encode(lookup)}); // ${node.operator}`;
+    if (tmp instanceof ir.Var) {
+      node.parent.method.add(tmp);
+    }
+    let ret = `js::op_${opName}(${encode(tmp)}, ${encode(lookup)}); // ${node.operator}`;
+    lookup.type = tmp.type;
+    return ret;
   }
   BinaryExpression(node) {
     let out = [];
@@ -834,47 +1005,215 @@ class CPP {
         this.stack.push(lookup);
         return out;
     }
-    const tmp = new ir.Var();
+    let tmp = new ir.Var();
+    const op = binOpName[node.operator] || node.operator;
+    switch (op) {
+      case "add":
+        // console.log("CTV ", left.hasCTV, left.name, "(", left.CTV, ")  + ", right.hasCTV, right.name, "(", right.CTV, ")");
+
+        if (left.hasCTV && right.hasCTV) {
+          tmp = new ir.Literal(left.CTV + right.CTV);
+        } else {
+          tmp.hasCTV = false;
+          if (left.declType == "Object*" || right.declType == "Object*" || !left.declType || !right.declType) {
+            // tmp.setDeclType("js::Local");
+          } else if (left.declType == "string" || right.declType == "string") {
+            tmp.setDeclType("string");
+          } else if (left.declType == "Undefined" || right.declType == "Undefined") {
+            tmp.setDeclType("Undefined");
+          } else if (left.declType == "Float" || right.declType == "Float") {
+            tmp.setDeclType("Float");
+          } else {
+            tmp.setDeclType("int32_t");
+          }
+        }
+        break;
+      case "sub":
+        // console.log("CTV ", left.hasCTV, left.name, "(", left.CTV, ")  - ", right.hasCTV, right.name, "(", right.CTV, ")");
+
+        if (left.hasCTV && right.hasCTV) {
+          tmp = new ir.Literal(left.CTV - right.CTV);
+        } else {
+          tmp.hasCTV = false;
+          if (left.declType == "int32_t" && right.declType == "int32_t") {
+            tmp.setDeclType("int32_t");
+          } else if (left.declType == "uint32_t" && right.declType == "uint32_t") {
+            tmp.setDeclType("uint32_t");
+          } else {
+            tmp.setDeclType("Float");
+          }
+        }
+        break;
+      case "mul":
+        // console.log("CTV ", left.hasCTV, left.name, "(", left.CTV, ")  * ", right.hasCTV, right.name, "(", right.CTV, ")");
+
+        if (left.hasCTV && right.hasCTV) {
+          tmp = new ir.Literal(left.CTV * right.CTV);
+        } else {
+          tmp.hasCTV = false;
+          if (left.declType == "int32_t" && right.declType == "int32_t") {
+            tmp.setDeclType("int32_t");
+          } else if (left.declType == "uint32_t" && right.declType == "uint32_t") {
+            tmp.setDeclType("uint32_t");
+          } else {
+            tmp.setDeclType("Float");
+          }
+        }
+        break;
+      case "mod":
+        // console.log("CTV ", left.hasCTV, left.name, "(", left.CTV, ")  - ", right.hasCTV, right.name, "(", right.CTV, ")");
+
+        if (left.hasCTV && right.hasCTV) {
+          tmp = new ir.Literal(left.CTV % right.CTV);
+        } else {
+          tmp.hasCTV = false;
+          if (left.declType == "int32_t" && right.declType == "int32_t") {
+            tmp.setDeclType("int32_t");
+          } else if (left.declType == "uint32_t" && right.declType == "uint32_t") {
+            tmp.setDeclType("uint32_t");
+          } else {
+            tmp.setDeclType("Float");
+          }
+        }
+        break;
+      case "div":
+        // console.log("CTV ", left.hasCTV, left.name, "(", left.CTV, ")  - ", right.hasCTV, right.name, "(", right.CTV, ")");
+
+        if (left.hasCTV && right.hasCTV) {
+          tmp = new ir.Literal(left.CTV / right.CTV);
+        } else {
+          tmp.hasCTV = false;
+          if (left.declType == "int32_t" && right.declType == "int32_t") {
+            tmp.setDeclType("int32_t");
+          } else if (left.declType == "uint32_t" && right.declType == "uint32_t") {
+            tmp.setDeclType("uint32_t");
+          } else {
+            tmp.setDeclType("Float");
+          }
+        }
+        break;
+      case "lt":
+        tmp.setDeclType("int32_t");
+        tmp.hasCTV = left.hasCTV && right.hasCTV;
+        if (tmp.hasCTV) {
+          tmp.CTV = left.CTV < right.CTV;
+        }
+        break;
+      case "leq":
+        tmp.setDeclType("int32_t");
+        tmp.hasCTV = left.hasCTV && right.hasCTV;
+        if (tmp.hasCTV) {
+          tmp.CTV = left.CTV <= right.CTV;
+        }
+        break;
+      case "gt":
+        tmp.setDeclType("int32_t");
+        tmp.hasCTV = left.hasCTV && right.hasCTV;
+        if (tmp.hasCTV) {
+          tmp.CTV = left.CTV > right.CTV;
+        }
+        break;
+      case "geq":
+        tmp.setDeclType("int32_t");
+        tmp.hasCTV = left.hasCTV && right.hasCTV;
+        if (tmp.hasCTV) {
+          tmp.CTV = left.CTV >= right.CTV;
+        }
+        break;
+      case "neq":
+        tmp.setDeclType("int32_t");
+        tmp.hasCTV = left.hasCTV && right.hasCTV;
+        if (tmp.hasCTV) {
+          tmp.CTV = left.CTV != right.CTV;
+        }
+        break;
+      case "eq":
+        tmp.setDeclType("int32_t");
+        tmp.hasCTV = left.hasCTV && right.hasCTV;
+        if (tmp.hasCTV) {
+          tmp.CTV = left.CTV == right.CTV;
+        }
+        break;
+      case "seq":
+        tmp.setDeclType("int32_t");
+        tmp.hasCTV = left.hasCTV && right.hasCTV;
+        if (tmp.hasCTV) {
+          tmp.CTV = left.CTV === right.CTV;
+        }
+        break;
+      case "sneq":
+        tmp.setDeclType("int32_t");
+        tmp.hasCTV = left.hasCTV && right.hasCTV;
+        if (tmp.hasCTV) {
+          tmp.CTV = left.CTV !== right.CTV;
+        }
+        break;
+      case "or":
+        // console.log("CTV ", left.hasCTV, left.name, "(", left.CTV, ")  | ", right.hasCTV, right.name, "(", right.CTV, ")");
+
+        if (left.hasCTV && right.hasCTV) {
+          tmp = new ir.Literal(left.CTV | right.CTV);
+        } else {
+          tmp.setDeclType("int32_t");
+        }
+        break;
+      case "and":
+        // console.log("CTV ", left.hasCTV, left.name, "(", left.CTV, ")  | ", right.hasCTV, right.name, "(", right.CTV, ")");
+
+        if (left.hasCTV && right.hasCTV) {
+          tmp = new ir.Literal(left.CTV & right.CTV);
+        } else {
+          tmp.setDeclType("int32_t");
+        }
+        break;
+      case "xor":
+        // console.log("CTV ", left.hasCTV, left.name, "(", left.CTV, ")  ^ ", right.hasCTV, right.name, "(", right.CTV, ")");
+
+        if (left.hasCTV && right.hasCTV) {
+          tmp = new ir.Literal(left.CTV ^ right.CTV);
+        } else {
+          tmp.setDeclType("int32_t");
+        }
+        break;
+      case "shl":
+        // console.log("CTV ", left.hasCTV, left.name, "(", left.CTV, ")  | ", right.hasCTV, right.name, "(", right.CTV, ")");
+
+        if (left.hasCTV && right.hasCTV) {
+          tmp = new ir.Literal(left.CTV << right.CTV);
+        } else {
+          tmp.setDeclType("int32_t");
+        }
+        break;
+      case "shr":
+        // console.log("CTV ", left.hasCTV, left.name, "(", left.CTV, ")  | ", right.hasCTV, right.name, "(", right.CTV, ")");
+
+        if (left.hasCTV && right.hasCTV) {
+          tmp = new ir.Literal(left.CTV >> right.CTV);
+        } else {
+          tmp.setDeclType("int32_t");
+        }
+        break;
+      case "sru":
+        // console.log("CTV ", left.hasCTV, left.name, "(", left.CTV, ")  | ", right.hasCTV, right.name, "(", right.CTV, ")");
+
+        if (left.hasCTV && right.hasCTV) {
+          tmp = new ir.Literal(left.CTV >>> right.CTV);
+        } else {
+          tmp.setDeclType("int32_t");
+        }
+        break;
+    }
     node.parent.add(tmp);
     this.stack.push(tmp);
-    tmp.write++;
-    const opName = {
-      "+": "add",
-      "-": "sub",
-      "*": "mul",
-      "%": "mod",
-      "/": "div",
-      "<": "lt",
-      "<=": "leq",
-      ">": "gt",
-      ">=": "geq",
-      "!=": "neq",
-      "==": "eq",
-      "===": "seq",
-      "!==": "sneq",
-      "|": "or",
-      "&": "and",
-      "^": "xor",
-      "<<": "shl",
-      ">>": "shr",
-      ">>>": "sru",
-      "+=": "add",
-      "-=": "sub",
-      "*=": "mul",
-      "%=": "mod",
-      "/=": "div",
-      "|=": "or",
-      "&=": "and",
-      "^=": "xor",
-      "<<=": "shl",
-      ">>=": "shr",
-      ">>>=": "sru"
-    };
-    out.push(`js::op_${opName[node.operator] || node.operator}(${encode(tmp)}, ${local(left)}, ${local(right)});`);
+    if (tmp instanceof ir.Var) {
+      tmp.write++;
+      out.push(`js::op_${op}(${encode(tmp)}, ${encode(left)}, ${encode(right)});`);
+    }
     return out;
   }
   Array(node) {
     const array = new ir.Var();
+    array.setDeclType("Object*");
     this.method.add(array);
     array.write++;
     const out = [];
@@ -890,6 +1229,7 @@ class CPP {
   }
   Objekt(node) {
     const obj = new ir.Var();
+    obj.setDeclType("Object*");
     this.method.add(obj);
     obj.write++;
     const out = [];
@@ -900,7 +1240,8 @@ class CPP {
     for (let i = 0; i < node.length; ++i) {
       let value = this.stack.pop();
       let key = this.stack.pop();
-      values[node.length - i - 1] = `js::set(${strobj}, ${literalToString(key.variable, true)}, ${encode(value)});`;
+      if (key instanceof ir.LookUp) key = key.variable;else if (key instanceof ir.Literal) key = key.value;
+      values[node.length - i - 1] = `js::set(${strobj}, ${literalToString(key, true)}, ${encode(value)});`;
     }
     this.stack.push(obj);
     return out;
@@ -919,6 +1260,7 @@ class CPP {
     var ret;
     if (!node.discardResult) {
       ret = new ir.Var();
+      ret.hasCTV = false;
       this.method.add(ret);
     }
     const argv = [];
@@ -963,7 +1305,7 @@ class CPP {
       if (!sym) this.error(`Could not find ${key}`);
       return encode(sym);
     });
-    return str;
+    return this.header.join('\n') + '\n' + str;
     function toString(arr) {
       for (let i = 0, max = arr.length; i < max; ++i) {
         const v = arr[i];
@@ -1171,8 +1513,10 @@ class ProgramParser {
       const arr = new ir.Var();
       block.add(arr);
       const it = new ir.Var();
+      // it.setDeclType("int32_t");
       block.add(it);
       const max = new ir.Var();
+      // max.setDeclType("int32_t");
       block.add(max);
       let val;
       this.push(block.addPreEnter(), preEnter => {
@@ -1363,6 +1707,14 @@ class ProgramParser {
   ExpressionStatement(node) {
     if (node.expression.type == "Literal" && typeof node.expression.value == "string") {
       JSC.pragma(node.expression.value);
+      if (JSC.opts["inline-cpp"]) {
+        this.scope.add(new ir.Inline("cpp", JSC.opts["inline-cpp"], "inline"));
+        JSC.opts["inline-cpp"] = null;
+      }
+      if (JSC.opts["header-cpp"]) {
+        this.scope.add(new ir.Inline("cpp", JSC.opts["header-cpp"], "header"));
+        JSC.opts["header-cpp"] = null;
+      }
       return;
     }
     this.discardResult = 1;
@@ -17118,7 +17470,7 @@ class IDE {
   async closeProject() {
     [...Object.values(this.#editors)].forEach(({
       editor
-    }) => editor.commit());
+    }) => editor?.commit());
     if (this.model) {
       this.model.set('previewProject', '');
       this.model.set('previewHTML', '');
