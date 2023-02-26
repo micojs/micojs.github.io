@@ -1361,7 +1361,7 @@ Object.defineProperty(exports, "__esModule", {
 });
 exports.dataProg = dataProg;
 function dataProg(ast, program, filename, jsc) {
-  const name = filename.split('/').pop().split('.')[0];
+  const name = filename.split('/').pop().split('.')[0].replace(/^[^a-zA-Z_]+|[^a-zA-Z0-9_]+/gi, '');
   // console.log('Adding resource ', name, ast);
   program.resourceData[name] = ast;
   return program;
@@ -1954,12 +1954,13 @@ function toString(ast) {
 function jsWriter(program, opts) {
   const R = Object.keys(program.resourceData).map(res => {
     const src = program.resourceData[res];
+    const clean = res.replace(/^[^a-zA-Z_]+|[^a-zA-Z0-9_]+/gi, '');
     if (!src) {
-      return `//R.${res}; // built-in`;
+      return `//R.${clean}; // built-in`;
     }
     const out = [];
     for (let i = 0, len = src.length; i < len; i += 2) out.push(parseInt(src.substr(i, 2), 16));
-    return `R.${res} = Uint8Array.from([${out.join(',')}]);`;
+    return `R.${clean} = Uint8Array.from([${out.join(',')}]);`;
   }).join('\n');
   return R + '\n' + program.sourceAST.map(ast => toString(ast)).join('\n');
 }
