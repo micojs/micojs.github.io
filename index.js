@@ -1299,13 +1299,57 @@ class CPP {
       if (key == 'minStringTable') return minStringTable;
       if (key == 'translated') return translated;
       if (key == 'resources') {
-        return Object.keys(this.program.resourceData).map(res => {
+        const acc = [];
+        const resources = Object.keys(this.program.resourceData).sort((l, r) => typeof l < typeof r ? -1 : 1); // objects after strings
+
+        for (let res of resources) {
           const src = this.program.resourceData[res];
-          if (!src) return '// RESOURCEDECL(${res}); // built-in';
-          const out = [];
-          for (let i = 0, len = src.length; i < len; i += 2) out.push(parseInt(src.substr(i, 2), 16));
-          return `RESOURCEDECL(${res}) = {${out.join(',')}};`;
-        }).join('\n');
+          if (!src || typeof src == "string") continue;
+          if (!Array.isArray(src)) continue;
+          const type = src.type || 'uintptr_t';
+          acc.push(`extern const ${type} ${res}[];`);
+        }
+        for (let res of resources) {
+          const src = this.program.resourceData[res];
+          if (!src) continue; // `// RESOURCEDECL(${res}); // built-in`;
+          if (typeof src == "string") {
+            const out = [];
+            for (let i = 0, len = src.length; i < len; i += 2) out.push(parseInt(src.substr(i, 2), 16));
+            acc.push(`RESOURCEDECL(${res}) = {${out.join(',')}};`);
+            continue;
+          }
+          if (Array.isArray(src)) {
+            const type = src.type || 'uintptr_t';
+            const out = [];
+            for (let el of src) {
+              if (typeof el == 'object' && el) {
+                if ('h' in el) {
+                  out.push(`js::hash(${JSON.stringify(el.h)})`);
+                  continue;
+                }
+                if (typeof el.r == 'string') {
+                  const name = el.r.split('/').pop().split('.')[0].replace(/^[^a-zA-Z_]+|[^a-zA-Z0-9_]+/gi, '');
+                  let val = typeof el.o === 'number' ? `(${name} + ${el.o | 0})` : name;
+                  if (type === 'uint32_t' || type == 'uintptr_t') {
+                    out.push(`${type}(${val})`);
+                  } else if (type === 'uint8_t') {
+                    out.push(`${type}(uintptr_t(${val}) >>  0)`);
+                    out.push(`${type}(uintptr_t(${val}) >>  8)`);
+                    out.push(`${type}(uintptr_t(${val}) >> 16)`);
+                    out.push(`${type}(uintptr_t(${val}) >> 24)`);
+                  }
+                  continue;
+                }
+              }
+              if (typeof el === 'number') {
+                out.push(el | 0);
+                continue;
+              }
+            }
+            acc.push(`const ${type} ${res}[] = {${out.join(',')}};`);
+          }
+        }
+        return acc.join('\n');
       }
       let sym = this.main;
       if (key != 'main') sym = this.main.find(key, true);
@@ -1955,12 +1999,21 @@ function jsWriter(program, opts) {
   const R = Object.keys(program.resourceData).map(res => {
     const src = program.resourceData[res];
     const clean = res.replace(/^[^a-zA-Z_]+|[^a-zA-Z0-9_]+/gi, '');
-    if (!src) {
-      return `//R.${clean}; // built-in`;
+    if (typeof src == 'string') {
+      if (!src) {
+        return `//R.${clean}; // built-in`;
+      }
+      const out = [];
+      for (let i = 0, len = src.length; i < len; i += 2) out.push(parseInt(src.substr(i, 2), 16));
+      return `R.${clean} = Uint8Array.from([${out.join(',')}]);`;
+    } else {
+      if (Array.isArray(src)) {
+        for (let el of src) {
+          if (el && typeof el == "object" && el.r) el.r = el.r.split('.')[0].replace(/^[^a-zA-Z_]+|[^a-zA-Z0-9_]+/gi, '');
+        }
+      }
+      return `R.${clean} = ` + JSON.stringify(src);
     }
-    const out = [];
-    for (let i = 0, len = src.length; i < len; i += 2) out.push(parseInt(src.substr(i, 2), 16));
-    return `R.${clean} = Uint8Array.from([${out.join(',')}]);`;
   }).join('\n');
   return R + '\n' + program.sourceAST.map(ast => toString(ast)).join('\n');
 }
@@ -1987,7 +2040,15 @@ const writers = {
 };
 const transformers = {
   js: [_esProg.esAST, _esProg.esProg],
-  raw: [_dataProg.dataProg]
+  raw: [_dataProg.dataProg],
+  u32: [JSON.parse, obj => {
+    obj.type = 'uint32_t';
+    return obj;
+  }, _dataProg.dataProg],
+  u8: [JSON.parse, obj => {
+    obj.type = 'uint8_t';
+    return obj;
+  }, _dataProg.dataProg]
 };
 class JSC {
   constructor(reader) {
@@ -15956,7 +16017,8 @@ Object.defineProperty(exports, "__esModule", {
 exports.blit = void 0;
 const blit = `
 #define RESOURCEREF(x) ((js::ResourceRef*)res::x)
-#define RESOURCEDECL(x) const uint8_t x[]
+#define RESOURCEDECL_T(T, x) const T x[]
+#define RESOURCEDECL(x) RESOURCEDECL_T(uint8_t, x)
 #define PRINT(str) blit::debug((const char*)(str))
 #define PRINTLN() blit::debug("\\n\\r");
 #define STRDECL(VAR, LEN, STR) __attribute__ ((aligned)) const std::array<uint8_t, sizeof(js::Buffer) + LEN> VAR = js::bufferFrom<LEN>(STR);
@@ -16008,7 +16070,8 @@ Object.defineProperty(exports, "__esModule", {
 exports.espboy = void 0;
 const espboy = `
 #define RESOURCEREF(x) ((js::ResourceRef*)res::x)
-#define RESOURCEDECL(x) const uint8_t PROGMEM x[]
+#define RESOURCEDECL_T(T, x) const T PROGMEM x[]
+#define RESOURCEDECL(x) RESOURCEDECL_T(uint8_t, x)
 #define PRINT(str) Serial.print((const char*)str)
 #define PRINTLN() Serial.print("\\n");
 #define STRDECL(VAR, LEN, STR) __attribute__ ((aligned)) const std::array<uint8_t, sizeof(js::Buffer) + LEN> VAR = js::bufferFrom<LEN>(STR);
@@ -16052,7 +16115,8 @@ Object.defineProperty(exports, "__esModule", {
 exports.meta = void 0;
 const meta = `
 #define RESOURCEREF(x) ((js::ResourceRef*)res::x)
-#define RESOURCEDECL(x) const uint8_t x[]
+#define RESOURCEDECL_T(T, x) const T x[]
+#define RESOURCEDECL(x) RESOURCEDECL_T(uint8_t, x)
 #define PRINT(str) SerialUSB.print((const char*)str)
 #define PRINTLN() SerialUSB.print("\\n");
 #define STRDECL(VAR, LEN, STR) __attribute__ ((aligned)) const std::array<uint8_t, sizeof(js::Buffer) + LEN> VAR = js::bufferFrom<LEN>(STR);
@@ -16097,7 +16161,8 @@ Object.defineProperty(exports, "__esModule", {
 exports.pico = void 0;
 const pico = `
 #define RESOURCEREF(x) ((js::ResourceRef*)res::x)
-#define RESOURCEDECL(x) const uint8_t x[]
+#define RESOURCEDECL_T(T, x) const T x[]
+#define RESOURCEDECL(x) RESOURCEDECL_T(uint8_t, x)
 #define PRINT(str) blit::debug((const char*)(str))
 #define PRINTLN() blit::debug("\\n\\r");
 #define STRDECL(VAR, LEN, STR) __attribute__ ((aligned)) const std::array<uint8_t, sizeof(js::Buffer) + LEN> VAR = js::bufferFrom<LEN>(STR);
@@ -16149,7 +16214,8 @@ Object.defineProperty(exports, "__esModule", {
 exports.pokitto = void 0;
 const pokitto = `
 #define RESOURCEREF(x) ((js::ResourceRef*)resource::x)
-#define RESOURCEDECL(x) const uint8_t x[]
+#define RESOURCEDECL_T(T, x) const T x[]
+#define RESOURCEDECL(x) RESOURCEDECL_T(uint8_t, x)
 #define PRINT(str) LOG((const char*)(str))
 #define PRINTLN() LOG("\\n");
 #define STRDECL(VAR, LEN, STR) __attribute__ ((aligned)) const std::array<uint8_t, sizeof(js::Buffer) + LEN> VAR = js::bufferFrom<LEN>(STR);
@@ -17865,8 +17931,8 @@ class IDE {
     if (!this.#fs || !platform) return;
     const code = `// Autogenerated file - DO NOT EDIT!
 "set platform ${platform}";
-"addSysCall setScreenMode setFPS setPen setFont setLED setTexture";
-"addSysCall setMirrored setFlipped setTransparent";
+"addSysCall setFPS setPen setFont setLED setTexture";
+"addSysCall setMirrored setFlipped setTransparent setTileMap";
 "addSysCall getWidth getHeight readByte getTime";
 "addSysCall clear image text rect";
 "push globals UP DOWN LEFT RIGHT A B C D FRAMETIME PI HALF_PI TWO_PI";
@@ -18095,11 +18161,11 @@ class ImageEditor {
                 ['img', {id:'img', src:image, onload:this.onload.bind(this)}]
             ]],
             ['div', {id:'sidebar'}, [
-                ['select', {id:'mode', onchange:this.changeMeta.bind(this)}, [
-                    ['option', {value:'image', textContent:'image'}],
-                    ['option', {value:'tilemap', textContent:'tilemap'}],
-                    ['option', {value:'tileset', textContent:'tileset'}]
-                ]],
+                // ['select', {id:'mode', onchange:this.changeMeta.bind(this)}, [
+                //     ['option', {value:'image', textContent:'image'}],
+                //     ['option', {value:'tilemap', textContent:'tilemap'}],
+                //     ['option', {value:'tileset', textContent:'tileset'}]
+                // ]],
                 [{id:'imageSidebar'}, [
                     [{className:'row'}, [
                         ['span', {textContent:'Width:'}],
@@ -18110,33 +18176,33 @@ class ImageEditor {
                         ['span', {id:'imgheight'}]
                     ]]
                 ]],
-                [{id:'tilemapSidebar'}, [
-                    [{className:'row'}, [
-                        ['span', {textContent:'Tile Set:'}],
-                        ['select', {id:'tileset', onchange:this.changeMeta.bind(this)}, this.getTilesets().map(path => [
-                            'option', {value:path, textContent:path.replace(/.*\/|\..*/g, '')}
-                        ])],
-                        ['button', {id:'refresh', onclick:this.refreshTileSets.bind(this), textContent:'⟳'}]
-                    ]]
-                ]],
-                [{id:'tilesetSidebar'}, [
-                    [{className:'row'}, [
-                        ['span', {textContent:'Tile Width:'}],
-                        ['input', {
-                            id:'tilewidth', type:"number", min:"8", max:"256",
-                            onchange:this.changeMeta.bind(this),
-                            value:this.metadata.tileset.tilewidth|0||8
-                        }]
-                    ]],
-                    [{className:'row'}, [
-                        ['span', {textContent:'Tile Height:'}],
-                        ['input', {
-                            id:'tileheight', type:"number", min:"8", max:"256",
-                            onchange:this.changeMeta.bind(this),
-                            value:this.metadata.tileset.tileheight|0||8
-                        }]
-                    ]]
-                ]]
+                // [{id:'tilemapSidebar'}, [
+                //     [{className:'row'}, [
+                //         ['span', {textContent:'Tile Set:'}],
+                //         ['select', {id:'tileset', onchange:this.changeMeta.bind(this)}, this.getTilesets().map(path => [
+                //             'option', {value:path, textContent:path.replace(/.*\/|\..*/g, '')}
+                //         ])],
+                //         ['button', {id:'refresh', onclick:this.refreshTileSets.bind(this), textContent:'⟳'}]
+                //     ]]
+                // ]],
+                // [{id:'tilesetSidebar'}, [
+                //     [{className:'row'}, [
+                //         ['span', {textContent:'Tile Width:'}],
+                //         ['input', {
+                //             id:'tilewidth', type:"number", min:"8", max:"256",
+                //             onchange:this.changeMeta.bind(this),
+                //             value:this.metadata.tileset.tilewidth|0||8
+                //         }]
+                //     ]],
+                //     [{className:'row'}, [
+                //         ['span', {textContent:'Tile Height:'}],
+                //         ['input', {
+                //             id:'tileheight', type:"number", min:"8", max:"256",
+                //             onchange:this.changeMeta.bind(this),
+                //             value:this.metadata.tileset.tileheight|0||8
+                //         }]
+                //     ]]
+                // ]]
             ]]
         ]), {}, this);
         this.#dom.tileset.value = this.metadata.tilemap.tileset;
@@ -18950,6 +19016,12 @@ const palette = [
     [255, 255, 255]
 ];
 
+function getImageHeaderSize(img) {
+    if (img.width < 256 && img.height < 256)
+        return 4;
+    return 7;
+}
+
 function convertToU8(img, settings){
     settings = settings || {bpp:8, header:1, isTransparent:1};
     let transparentIndex = settings.transparent|0;
@@ -18957,7 +19029,7 @@ function convertToU8(img, settings){
     let out = [];
     let bpp = (settings.bpp|0) || (Math.log(palette.length) / Math.log(2))|0;
     if (settings.header|0) {
-        if (img.width < 256 && img.height < 256) {
+        if (getImageHeaderSize(img) === 4) {
             out.push([img.width, img.height, bpp, 0]);
         } else {
             out.push([
@@ -19082,12 +19154,58 @@ function bytesToStr(arr) {
     return out;
 }
 
+function normalizeBytes(arr) {
+    let out = [];
+    if (!Array.isArray(arr))
+        throw "Expected array of bytes";
+    for (let data of arr) {
+        if (typeof data === 'number') {
+            data = data >>> 0;
+            do {
+                const v = data & 0xFF;
+                data >>>= 8;
+                out.push(v);
+            } while (data > 0);
+        } else {
+            for (let b of normalizeBytes(data))
+                out.push(b);
+        }
+    }
+    return out;
+}
+
+function bytesToLen(arr) {
+    let out = 0;
+    if (!Array.isArray(arr))
+        return 0;
+    for (let data of arr) {
+        if (typeof data === 'number') {
+            data = data >>> 0;
+            do {
+                const v = data & 0xFF;
+                data >>>= 8;
+                out += 2;
+            } while (data > 0);
+        } else {
+            out += bytesToLen(data);
+        }
+    }
+    return out;
+}
+
 function u32(x) {
     return [
-        (x >>> 24) & 0xFF,
-        (x >>> 16) & 0xFF,
+        (x) & 0xFF,
         (x >>> 8) & 0xFF,
-        (x) & 0xFF
+        (x >>> 16) & 0xFF,
+        (x >>> 24) & 0xFF
+    ];
+}
+
+function u16(x) {
+    return [
+        (x) & 0xFF,
+        (x >>> 8) & 0xFF
     ];
 }
 
@@ -19107,34 +19225,243 @@ async function loadImage(data) {
     });
 }
 
-async function convertImage(name, data, outfs) {
-    const out = bytesToStr(convertToU8(await loadImage(data), {bpp:8, header:1, isTransparent:1}));
-    const outName = `/.R/${name.split('.')[0]}.raw`;
+async function convertImage(name, data, outfs, tileTable) {
+    const recname = name.split('.')[0];
+    const imgdata = await loadImage(data);
+    tileTable.setTileImage(name, imgdata);
+    const out = bytesToStr(convertToU8(imgdata, {bpp:8, header:1, isTransparent:1}));
+    const outName = `/.R/${recname}.raw`;
     outfs.writeFile(outName, out);
 }
 
-async function convertTMJ(name, data, outfs) {
-    const header = [];
+function getTile(map, id) {
+    id &= 0xFFFFFF;
+
+    if (!id)
+        return null;
+
+    if (!map._cache)
+        map._cache = {};
+    const cache = map._cache;
+
+    if (id in cache)
+        return cache[id];
+
+    let tilesets = map.tilesets;
+    let set = null;
+    for (let candidate of tilesets) {
+        if (candidate.firstgid <= id && (candidate.firstgid + candidate.tilecount) > id) {
+            set = candidate;
+            break;
+        }
+    }
+
+    if (!set) {
+        cache[id] = null;
+        return null;
+    }
+
+    let index = (id|0) - (set.firstgid|0);
+    let x = index % set.columns;
+    let y = (index / set.columns) | 0;
+    let properties = null;
+
+    if (set.tiles) {
+        for (let entry of set.tiles) {
+            if (entry.id != index)
+                continue;
+            properties = Object.assign(Object.create(null), entry);
+            delete properties.id;
+
+            for (let prop in properties) {
+                let value = prop.value;
+
+                if (typeof value == 'string')
+                    value = {h:value};
+                else
+                    value |= 0;
+
+                if (!value)
+                    delete properties[prop];
+                else
+                    properties[prop] = value;
+            }
+
+            if (entry.properties) {
+                delete properties.properties;
+                for (let prop of entry.properties) {
+                    let value = prop.value;
+
+                    if (typeof value == "string")
+                        value = {h:value};
+                    else
+                        value |= 0;
+
+                    if (value)
+                        properties[prop.name] = value;
+                }
+            }
+
+            break;
+        }
+    }
+
+    const tile = {
+        image:set.image,
+        properties,
+        offsetX:x * set.tilewidth,
+        offsetY:y * set.tileheight
+    };
+
+    cache[id] = tile;
+
+    return tile;
+}
+
+function convertTileLayer(layer, data, tileTable) {
+    const out = [0];
+    for (let cell of layer.data) {
+        let tile = getTile(data, cell);
+        if (!tile) {
+            out.push(0);
+            continue;
+        }
+        let id = tileTable.getId(cell, tile, false, false);
+        out.push(id);
+    }
+    return out;
+}
+
+function convertObjectLayer(layer, data, tileTable) {
+    const out = [1];
+    return out;
+}
+
+async function convertTMJ(name, datasrc, outfs, tileTable) {
+    const data = JSON.parse(datasrc);
+
+    const header = [
+        u16(0),                                   // map resource indicator
+        u32(0),                                   // tile set offset
+        data.layers.length & 0xFF,                // layer count
+        u16(data.width), u16(data.height),        // map width, height
+        u16(data.tilewidth), u16(data.tileheight) // tile width, height
+    ];
+
     const layers = [];
     const tiles = [];
     const out = [header, layers, tiles];
-    const outName = `/.SD/${name.split('.')[0]}.map`;
+    const outName = `/.R/${name.split('.')[0]}.u8`;
 
-    outfs.writeFile(outName, bytesToStr(out));
+    for (let layer of data.layers) {
+        if (layer.type == "tilelayer") {
+            layers.push(convertTileLayer(layer, data, tileTable));
+        } else if (layer.type == "objectgroup") {
+            layers.push(convertObjectLayer(layer, data, tileTable));
+        }
+    }
+
+    const tileStart = bytesToLen(out);
+    // header[1] = u32(tileStart);
+    tileTable.tileStart = tileStart;
+
+    // outfs.writeFile(outName, bytesToStr(out));
+    const normalized = normalizeBytes(out);
+    normalized.splice(2, 4, {r:'TileTable'});
+
+    outfs.writeFile(outName, JSON.stringify(normalized));
+}
+
+class TileTable {
+    index = [];
+    cache = {};
+    tileStart = 0;
+
+    images = Object.create(null);
+
+    setTileImage(name, data) {
+        this.images[name] = data;
+    }
+
+    serialize(out) {
+        let tiles = [];
+        let props = [];
+        out.push(tiles, props);
+    }
+
+    write(fs) {
+        const tiles = [];
+        const props = [];
+        let propind = this.index.length * 2;
+
+        for (let entry of this.index) {
+            let img = this.images[entry.tile.image];
+            if (!img)
+                throw "Could not find " + entry.tile.image + " for tileset";
+
+            const tile = entry.tile;
+            let propcount = tile.properties ? Object.keys(tile.properties).length : 0;
+
+            tiles.push(
+                {r:tile.image, o:getImageHeaderSize(img) + tile.offsetY * img.width + tile.offsetX},
+                (propcount ? propind : 0) | (img.width << 16)
+            );
+
+            if (tile.properties) {
+                props.push(propcount); propind++;
+                for (let key in tile.properties) {
+                    props.push({h:key}, tile.properties[key]);
+                    propind += 2;
+                }
+            }
+        }
+
+        const out = [...tiles, ...props];
+        fs.writeFile('/.R/TileTable.u32', JSON.stringify(out));
+    }
+
+    getTile(id) {
+        return this.index[id - 1];
+    }
+
+    getId(gid, tile, mirror, flip) {
+        if (gid in this.cache)
+            return this.cache[gid];
+
+        let key = JSON.stringify([tile, mirror, flip]);
+        for (let i = 0; i < this.index.length; ++i) {
+            const entry = this.index[i];
+            if (entry.key == key) {
+                this.cache[gid] = i + 1;
+                return i + 1;
+            }
+        }
+
+        this.index.push({
+            key,
+            tile,
+            mirror, flip
+        });
+
+        this.cache[gid] = this.index.length;
+        return this.cache[gid];
+    }
 }
 
 async function prebuild(fs) {
     let promises = [];
     let outfs;
+    let tileTable = new TileTable();
+
     fs.recurse(entity => {
         if (!entity.isFile())
             return entity.name[0] != '.';
         let extension = entity.extension;
         if (extension == 'jpg' || extension == 'png') {
-            init().push(convertImage.call(this, entity.name, entity.node.data, outfs));
+            init().push(convertImage.call(this, entity.name, entity.node.data, outfs, tileTable));
         }
         if (extension == 'tmj') {
-            init().push(convertTMJ.call(this, entity.name, entity.node.data, outfs));
+            init().push(convertTMJ.call(this, entity.name, entity.node.data, outfs, tileTable));
         }
         return false;
     });
@@ -19143,6 +19470,8 @@ async function prebuild(fs) {
         return fs;
 
     await Promise.all(promises);
+
+    tileTable.write(outfs);
 
     return outfs;
 
@@ -20999,7 +21328,9 @@ class TileMapEditor {
                     const outOffset = (y * tileheight + py) * outStride + x * tilewidth;
                     const imgOffset = (offsetY + py) * imgStride + offsetX;
                     for (let px = 0; px < tilewidth; ++px) {
-                        out32[outOffset + px] = img32[imgOffset + px];
+                        let c = img32[imgOffset + px];
+                        if (c)
+                            out32[outOffset + px] = c;
                     }
                 }
             }

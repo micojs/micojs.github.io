@@ -1,6 +1,7 @@
 var UP = false, DOWN = false, LEFT = false, RIGHT = false, A = false, B = false, C = false, D = false, FRAMETIME = 1;
 
 const _internal = {
+    fb32:null,
     font:R.fontMini,
     updateFrequency: 1000 / 30,
     framebuffer:null,
@@ -9,7 +10,12 @@ const _internal = {
     mirrored: false,
     flipped: false,
     transparent: true,
-    texture: null
+    texture: null,
+    map:null,
+    renderQueue:[],
+    push(cb, ...args) {
+        _internal.renderQueue.push(Object.assign({}, _internal, {cb, args}));
+    }
 };
 
 addEventListener('DOMContentLoaded', _=>{
@@ -37,6 +43,8 @@ addEventListener('DOMContentLoaded', _=>{
 
     const ctx = canvas.getContext("2d");
     _internal.framebuffer = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    _internal.fb32 = new Uint32Array(_internal.framebuffer.data.buffer);
+
     let startTime = performance.now();
     let prevTime = startTime;
     let updateCount = 0;
@@ -63,12 +71,132 @@ addEventListener('DOMContentLoaded', _=>{
                 for (let i = 0; i < updateDelta; ++i)
                     update(now);
                 render(now);
+                if (_internal.map)
+                    renderMap(_internal.map);
+                else
+                    flushRenderQueue();
                 ctx.putImageData(_internal.framebuffer, 0, 0);
                 FRAMETIME = ((performance.now() - startUpdate) | 0) || 1;
             }
         } finally {
             requestAnimationFrame(tick);
         }
+    }
+
+    function flushRenderQueue() {
+        if (!_internal.renderQueue.length)
+            return;
+        let backup = Object.assign({}, _internal);
+        let queue = _internal.renderQueue;
+        for (let cmd of queue) {
+            Object.assign(_internal, cmd);
+            cmd.cb(...cmd.args);
+        }
+        Object.assign(_internal, backup);
+        _internal.renderQueue.length = 0;
+    }
+
+    let header, mapCursor;
+
+    function drawTiles(map) {
+        const screenWidth = _internal.framebuffer.width;
+        const screenHeight = _internal.framebuffer.height;
+        const mapStride = header.mapWidth;
+        const nextMapCursor = mapCursor + header.mapHeight * mapStride;
+
+        let ty = 0;
+        let mty = (ty + screenHeight / header.tileHeight) | 0;
+        if (mty > header.mapHeight)
+            mty = header.mapHeight;
+        mapCursor += ty * mapStride;
+
+        let stx = 0;
+        let mtx = screenWidth / header.tileWidth | 0;
+        let rtx = screenWidth % header.tileWidth | 0;
+        mtx += stx;
+        if (mtx >= mapStride) {
+            mtx = mapStride;
+            rtx = 0;
+        }
+
+        const tileHeight = header.tileHeight;
+        const tileWidth = header.tileWidth;
+        const tse = header.tileset;
+        let fboffset = 0;
+        const fb = _internal.fb32;
+
+        for (; ty < mty; ++ty, mapCursor += mapStride, fboffset += screenWidth * tileHeight) {
+            for (let tx = stx; tx < mtx; ++tx) {
+                let id = map[mapCursor + tx];
+                if (!id)
+                    continue;
+                id--;
+
+                let src = R[tse[id * 2].r];
+                let srcoffset = tse[id * 2].o | 0;
+                let srcStride = src[0];
+                let cursor = fboffset + tx * tileWidth;
+                for (let i = 0; i < tileHeight; ++i, srcoffset += srcStride, cursor += screenWidth) {
+                    for (let x = 0; x < tileWidth; ++x) {
+                        let pixel = src[srcoffset + x];
+                        if (pixel)
+                            fb[cursor + x] = palette[pixel];
+                        // SpriteCommand<0, 1, 0>::P_P(src, cursor, tileWidth, 0);
+                    }
+                }
+            }
+            if (rtx) {
+                let id = map[mapCursor + mtx];
+                if (!id)
+                    continue;
+                id--;
+
+                let src = R[tse[id * 2].r];
+                let srcoffset = tse[id * 2].o | 0;
+                let srcStride = src[0];
+                let cursor = fboffset + mtx * tileWidth;
+                for (let i = 0; i < tileHeight; ++i, srcoffset += srcStride, cursor += screenWidth) {
+                    for (let x = 0; x < rtx; ++x) {
+                        let pixel = src[srcoffset + x];
+                        if (pixel)
+                            fb[cursor + x] = palette[pixel];
+                        // SpriteCommand<0, 1, 0>::P_P(src, cursor, tileWidth, 0);
+                    }
+                }
+            }
+        }
+
+        mapCursor = nextMapCursor;
+    }
+
+    function renderMap(map) {
+        let tileset = R[map[2].r];
+
+        header = {
+            tileset:  R[map[2].r],
+            layerCount: map[3],
+            mapWidth:   map[4]  | (map[5]  << 8),
+            mapHeight:  map[6]  | (map[7]  << 8),
+            tileWidth:  map[8]  | (map[9]  << 8),
+            tileHeight: map[10] | (map[11] << 8)
+        };
+
+        mapCursor = 12;
+
+        for (let i = 0, max = header.layerCount; i < max; ++i) {
+            switch (map[mapCursor++]) {
+            case 0:
+                drawTiles(map);
+                break;
+            case 1:
+                flushRenderQueue();
+                break;
+            default:
+                return;
+            }
+        }
+
+        flushRenderQueue();
     }
 });
 
@@ -212,6 +340,10 @@ function setPen(r, g, b){
     return closest;
 }
 
+function setTileMap(map) {
+    _internal.map = map;
+}
+
 function setFont(font){
     _internal.font = font;
 }
@@ -249,8 +381,7 @@ function getHeight(texture){
 function clear(){
     let pen = _internal.pen;
     let rgb = (pen.r|0) | ((pen.g|0) << 8) | ((pen.b|0) << 16) | (0xFF << 24);
-    let arr = new Uint32Array(_internal.framebuffer.data.buffer);
-    arr.fill(rgb);
+    _internal.fb32.fill(rgb);
 }
 
 function blitInternal(x, y, angle, scale) {
@@ -372,7 +503,7 @@ function blitInternal(x, y, angle, scale) {
         minX = 0;
     }
 
-    let fb = new Uint32Array(_internal.framebuffer.data.buffer);
+    let fb = _internal.fb32;
     let fbi = minY * screenWidth;
     let srci = 4;
     let sign = 1;
@@ -410,31 +541,31 @@ function blitInternal(x, y, angle, scale) {
 function image(...args){
     switch (args.length) {
     case 0:
-        blitInternal(0, 0);
+        _internal.push(_=>blitInternal(0, 0));
         break;
 
     case 1:
         setTexture(args[0]);
-        blitInternal(0, 0, 0, 1);
+        _internal.push(_=>blitInternal(0, 0, 0, 1));
         break;
 
     case 2:
-        blitInternal(args[0]|0, args[1]|0, 0, 1);
+        _internal.push((x, y)=>blitInternal(x, y, 0, 1), args[0]|0, args[1]|0);
         break;
 
     case 3:
         setTexture(args[0]);
-        blitInternal(args[1]|0, args[2]|0, 0, 1);
+        _internal.push((x, y)=>blitInternal(x, y, 0, 1), args[1]|0, args[2]|0);
         break;
 
     case 4:
         setTexture(args[0]);
-        blitInternal(args[1]|0, args[2]|0, args[3], 1.0);
+        _internal.push((x, y, a)=>blitInternal(x, y, a, 1.0), args[1]|0, args[2]|0, args[3]|0);
         break;
 
     case 5:
         setTexture(args[0]);
-        blitInternal(args[1]|0, args[2]|0, args[3], args[4]);
+        _internal.push((x, y, a, z)=>blitInternal(x, y, a, z), args[1]|0, args[2]|0, args[3], args[4]);
         break;
 
     default:
@@ -444,41 +575,43 @@ function image(...args){
 }
 
 function rect(x, y, w, h) {
-    x |= 0;
-    y |= 0;
-    w |= 0;
-    h |= 0;
-    const fb = _internal.framebuffer;
+    _internal.push((x, y, w, h) => {
+        x |= 0;
+        y |= 0;
+        w |= 0;
+        h |= 0;
+        const fb = _internal.framebuffer;
 
-    if (x < 0) {
-        w += x;
-        x = 0;
-    }
-    if (y < 0) {
-        h += y;
-        y = 0;
-    }
-    if (x + w >= fb.width) {
-        w = fb.width - x;
-    }
-    if (y + h >= fb.height) {
-        h = fb.height - y;
-    }
-    if (w <= 0 || h <= 0) {
-        return;
-    }
-
-    h += y;
-    const pen = _internal.pen;
-    for (; y < h; ++y) {
-        let j = (y * fb.width + x) * 4;
-        for (let i = 0; i < w; ++i) {
-            fb.data[j++] = pen.r;
-            fb.data[j++] = pen.g;
-            fb.data[j++] = pen.b;
-            fb.data[j++] = 255;
+        if (x < 0) {
+            w += x;
+            x = 0;
         }
-    }
+        if (y < 0) {
+            h += y;
+            y = 0;
+        }
+        if (x + w >= fb.width) {
+            w = fb.width - x;
+        }
+        if (y + h >= fb.height) {
+            h = fb.height - y;
+        }
+        if (w <= 0 || h <= 0) {
+            return;
+        }
+
+        h += y;
+        const pen = _internal.pen;
+        for (; y < h; ++y) {
+            let j = (y * fb.width + x) * 4;
+            for (let i = 0; i < w; ++i) {
+                fb.data[j++] = pen.r;
+                fb.data[j++] = pen.g;
+                fb.data[j++] = pen.b;
+                fb.data[j++] = 255;
+            }
+        }
+    }, x, y, w, h);
 }
 
 function text(str, x, y){
@@ -489,9 +622,11 @@ function text(str, x, y){
     x |= 0;
     y |= 0;
 
-    for (let c of str) {
-        x += drawChar(x, y, c.charCodeAt(0));
-    }
+    _internal.push((str, x, y) => {
+        for (let c of str)
+            x += drawChar(x, y, c.charCodeAt(0));
+    }, str, x, y);
+
     return;
 
     function pixel(x, y) {
