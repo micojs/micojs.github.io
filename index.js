@@ -17935,7 +17935,7 @@ class IDE {
 "addSysCall setMirrored setFlipped setTransparent setTileMap";
 "addSysCall getWidth getHeight readByte getTime";
 "addSysCall clear image text rect";
-"push globals UP DOWN LEFT RIGHT A B C D FRAMETIME PI HALF_PI TWO_PI";
+"push globals UP DOWN LEFT RIGHT A B C D FRAMETIME CAMERA_X CAMERA_Y PI HALF_PI TWO_PI";
 "registerBuiltinResource fontMini fontTIC806x6 fontZXSpec fontAdventurer fontDonut fontDragon fontC64 fntC64UIGfx fontMonkey fontKarateka fontKoubit fontRunes fontTight fontTiny";
 "include /source/main.js"
 `;
