@@ -16357,8 +16357,8 @@ margin: auto;
 image-rendering: pixelated;
 }
 </style>
-<script src="assets.js?nc=6"></script>
-<script src="browser.js?nc=6"></script>
+<script src="assets.js?nc=7"></script>
+<script src="browser.js?nc=7"></script>
 <script>
 ${code}
 </script>
@@ -38930,7 +38930,7 @@ declare function setTileMap(map:TileMapResource):void;
 /**
  * Returns the value of the property of the tile under the given coordinates
  */
-declare function getTileProperty(x:number, y:number, property:string):void;
+declare function getTileProperty(x:number, y:number, property:string):number;
 
 /**
  * Sets the current drawing color.

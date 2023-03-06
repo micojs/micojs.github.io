@@ -1,4 +1,5 @@
-var UP = false, DOWN = false, LEFT = false, RIGHT = false, A = false, B = false, C = false, D = false, FRAMETIME = 1;
+var UP = false, DOWN = false, LEFT = false, RIGHT = false, A = false, B = false, C = false, D = false;
+var FRAMETIME = 1, CAMERA_X = 0, CAMERA_Y = 0;
 
 const _internal = {
     fb32:null,
@@ -71,10 +72,19 @@ addEventListener('DOMContentLoaded', _=>{
                 for (let i = 0; i < updateDelta; ++i)
                     update(now);
                 render(now);
-                if (_internal.map)
+
+                let pen = _internal.pen;
+                let rgb = (pen.r|0) | ((pen.g|0) << 8) | ((pen.b|0) << 16) | (0xFF << 24);
+                if (rgb) {
+                    _internal.fb32.fill(rgb);
+                }
+
+                if (_internal.map) {
                     renderMap(_internal.map);
-                else
+                } else {
                     flushRenderQueue();
+                }
+
                 ctx.putImageData(_internal.framebuffer, 0, 0);
                 FRAMETIME = ((performance.now() - startUpdate) | 0) || 1;
             }
@@ -102,67 +112,225 @@ addEventListener('DOMContentLoaded', _=>{
         const screenWidth = _internal.framebuffer.width;
         const screenHeight = _internal.framebuffer.height;
         const mapStride = header.mapWidth;
+        const mapHeight = header.mapHeight;
         const nextMapCursor = mapCursor + header.mapHeight * mapStride;
-
-        let ty = 0;
-        let mty = (ty + screenHeight / header.tileHeight) | 0;
-        if (mty > header.mapHeight)
-            mty = header.mapHeight;
-        mapCursor += ty * mapStride;
-
-        let stx = 0;
-        let mtx = screenWidth / header.tileWidth | 0;
-        let rtx = screenWidth % header.tileWidth | 0;
-        mtx += stx;
-        if (mtx >= mapStride) {
-            mtx = mapStride;
-            rtx = 0;
-        }
-
         const tileHeight = header.tileHeight;
         const tileWidth = header.tileWidth;
         const tse = header.tileset;
+
+        let rowsPerWindow = (screenHeight / tileHeight) | 0;
+        const rowRemainder = screenHeight % tileHeight;
+        let colsPerWindow = (screenWidth / header.tileWidth) | 0;
+        const colRemainder = screenWidth % header.tileWidth;
+
+        let startY = CAMERA_Y|0;
+        if (startY < 0) {
+            startY %= mapHeight * tileHeight;
+            startY += mapHeight * tileHeight;
+        }
+
+        let startX = CAMERA_X|0;
+        if (startX < 0) {
+            startX %= mapStride * tileWidth;
+            startX += mapStride * tileWidth;
+        }
+
+        let startRow = startY / tileHeight | 0;
+        let startRowHeight = startY % tileHeight;
+        startRow %= mapHeight;
+
+        let startCol = startX / tileWidth | 0;
+        let startColWidth = startX % tileWidth;
+        startCol %= mapStride;
+
+        if (startRowHeight) {
+            startRowHeight = tileHeight - startRowHeight;
+            if (startRowHeight <= rowRemainder) {
+                rowsPerWindow++;
+            }
+        }
+
+        if (startColWidth) {
+            startColWidth = tileWidth - startColWidth;
+            if (startColWidth <= colRemainder) {
+                colsPerWindow++;
+            }
+        }
+
+        let endRow = startRow + rowsPerWindow;
+        let endRowHeight = screenHeight - startRowHeight - (rowsPerWindow - (startRowHeight ? 1 : 0)) * tileHeight;
+        let endColWidth = screenWidth - startColWidth - (colsPerWindow - (startColWidth ? 1 : 0)) * tileWidth;
+
         let fboffset = 0;
         const fb = _internal.fb32;
+        let src, line = 0;
 
-        for (; ty < mty; ++ty, mapCursor += mapStride, fboffset += screenWidth * tileHeight) {
-            for (let tx = stx; tx < mtx; ++tx) {
-                let id = map[mapCursor + tx];
+        if (startRowHeight) {
+            layer = mapCursor + startRow * mapStride;
+            let lineOffset = 0;
+            let colOffset = startCol;
+
+            if (startColWidth) {
+                let id = map[layer + colOffset];
+                if (++colOffset == mapStride)
+                    colOffset = 0;
+                if (id) {
+                    id--;
+                    src = R[tse[id * 2].r];
+                    let srcStride = src[0];
+                    let srcoffset = (tse[id * 2].o|0) + (tileHeight - startRowHeight) * srcStride + (tileWidth - startColWidth);
+                    let cursor = line;
+                    for (let i = 0; i < startRowHeight; ++i, srcoffset += srcStride, cursor += screenWidth)
+                        P_P(srcoffset, cursor, startColWidth);
+                }
+                lineOffset = startColWidth;
+            }
+
+            for (let tx = startColWidth ? 1 : 0; tx < colsPerWindow; ++tx, lineOffset += tileWidth) {
+                let id = map[layer + colOffset];
+                if (++colOffset == mapStride)
+                    colOffset = 0;
                 if (!id)
                     continue;
                 id--;
-
-                let src = R[tse[id * 2].r];
-                let srcoffset = tse[id * 2].o | 0;
+                src = R[tse[id * 2].r];
                 let srcStride = src[0];
-                let cursor = fboffset + tx * tileWidth;
-                for (let i = 0; i < tileHeight; ++i, srcoffset += srcStride, cursor += screenWidth) {
-                    for (let x = 0; x < tileWidth; ++x) {
-                        let pixel = src[srcoffset + x];
-                        if (pixel)
-                            fb[cursor + x] = palette[pixel];
-                        // SpriteCommand<0, 1, 0>::P_P(src, cursor, tileWidth, 0);
-                    }
+                let srcoffset = (tse[id * 2].o|0) + (tileHeight - startRowHeight) * srcStride;
+                let cursor = line + lineOffset;
+                for (let i = 0; i < startRowHeight; ++i, srcoffset += srcStride, cursor += screenWidth)
+                    P_P(srcoffset, cursor, tileWidth);
+            }
+
+            if (endColWidth) {
+                let id = map[layer + colOffset];
+                if (id) {
+                    id--;
+                    src = R[tse[id * 2].r];
+                    let srcStride = src[0];
+                    let srcoffset = (tse[id * 2].o|0) + (tileHeight - startRowHeight) * srcStride;
+                    let cursor = line + lineOffset;
+                    for (let i = 0; i < startRowHeight; ++i, srcoffset += srcStride, cursor += screenWidth)
+                        P_P(srcoffset, cursor, endColWidth);
                 }
             }
-            if (rtx) {
-                let id = map[mapCursor + mtx];
+
+            line += startRowHeight * screenWidth;
+        }
+
+        for (let row = startRowHeight ? 1 : 0; row < rowsPerWindow; ++row, line += screenWidth * tileHeight) {
+            let colOffset = startCol;
+
+            let y = startRow + row;
+            while (y >= mapHeight)
+                y -= mapHeight;
+            layer = mapCursor + y * mapStride;
+
+            let lineOffset = 0;
+
+            if (startColWidth) {
+                let id = map[layer + startCol];
+                if (++colOffset == mapStride)
+                    colOffset = 0;
+                if (id) {
+                    id--;
+                    src = R[tse[id * 2].r];
+                    let srcStride = src[0];
+                    let srcoffset = (tse[id * 2].o|0) + (tileWidth - startColWidth);
+                    let cursor = line;
+                    for (let i = 0; i < tileHeight; ++i, srcoffset += srcStride, cursor += screenWidth)
+                        P_P(srcoffset, cursor, startColWidth);
+                }
+                lineOffset = startColWidth;
+            }
+
+            for (let tx = startColWidth ? 1 : 0; tx < colsPerWindow; ++tx, lineOffset += tileWidth) {
+                let id = map[layer + colOffset];
+                if (++colOffset == mapStride)
+                    colOffset = 0;
                 if (!id)
                     continue;
                 id--;
-
-                let src = R[tse[id * 2].r];
-                let srcoffset = tse[id * 2].o | 0;
+                src = R[tse[id * 2].r];
+                let srcoffset = (tse[id * 2].o|0);
                 let srcStride = src[0];
-                let cursor = fboffset + mtx * tileWidth;
-                for (let i = 0; i < tileHeight; ++i, srcoffset += srcStride, cursor += screenWidth) {
-                    for (let x = 0; x < rtx; ++x) {
-                        let pixel = src[srcoffset + x];
-                        if (pixel)
-                            fb[cursor + x] = palette[pixel];
-                        // SpriteCommand<0, 1, 0>::P_P(src, cursor, tileWidth, 0);
-                    }
+                let cursor = line + lineOffset;
+                for (let i = 0; i < tileHeight; ++i, srcoffset += srcStride, cursor += screenWidth)
+                    P_P(srcoffset, cursor, tileWidth);
+            }
+            if (endColWidth) {
+                let id = map[layer + colOffset];
+                if (!id)
+                    continue;
+                id--;
+                src = R[tse[id * 2].r];
+                let srcStride = src[0];
+                let srcoffset = (tse[id * 2].o|0);
+                let cursor = line + lineOffset;
+                for (let i = 0; i < tileHeight; ++i, srcoffset += srcStride, cursor += screenWidth)
+                    P_P(srcoffset, cursor, endColWidth);
+            }
+        }
+
+        if (endRowHeight) {
+            let lineOffset = 0;
+            let colOffset = startCol;
+
+            endRow %= mapHeight;
+            layer = mapCursor + endRow * mapStride;
+            if (endRowHeight > tileHeight)
+                endRowHeight = tileHeight;
+
+
+            if (startColWidth) {
+                let id = map[layer + colOffset];
+                if (++colOffset == mapStride)
+                    colOffset = 0;
+                if (id) {
+                    id--;
+                    src = R[tse[id * 2].r];
+                    let srcStride = src[0];
+                    let srcoffset = (tse[id * 2].o|0) + (tileWidth - startColWidth);
+                    let cursor = line;
+                    for (let i = 0; i < endRowHeight; ++i, srcoffset += srcStride, cursor += screenWidth)
+                        P_P(srcoffset, cursor, startColWidth);
                 }
+                lineOffset = startColWidth;
+            }
+
+            for (let tx = startColWidth ? 1 : 0; tx < colsPerWindow; ++tx, lineOffset += tileWidth) {
+                let id = map[layer + colOffset];
+                if (++colOffset == mapStride)
+                    colOffset = 0;
+                if (!id)
+                    continue;
+                id--;
+                src = R[tse[id * 2].r];
+                let srcStride = src[0];
+                let srcoffset = (tse[id * 2].o|0);
+                let cursor = line + lineOffset;
+                for (let i = 0; i < endRowHeight; ++i, srcoffset += srcStride, cursor += screenWidth)
+                    P_P(srcoffset, cursor, tileWidth);
+            }
+
+            if (endColWidth) {
+                let id = map[layer + colOffset];
+                if (id) {
+                    id--;
+                    src = R[tse[id * 2].r];
+                    let srcStride = src[0];
+                    let srcoffset = (tse[id * 2].o|0);
+                    let cursor = line + lineOffset;
+                    for (let i = 0; i < endRowHeight; ++i, srcoffset += srcStride, cursor += screenWidth)
+                        P_P(srcoffset, cursor, endColWidth);
+                }
+            }
+        }
+
+        function P_P(srcoffset, cursor, amount) {
+            for (let x = 0; x < amount; ++x) {
+                let pixel = src[srcoffset + x];
+                if (pixel)
+                    fb[cursor + x] = palette[pixel];
             }
         }
 
@@ -340,6 +508,85 @@ function setPen(r, g, b){
     return closest;
 }
 
+function getTileProperty(x, y, key) {
+    let layerNumber = 0;
+    if (!_internal.map)
+        return 0;
+
+    let map = _internal.map;
+
+    const header = {
+        tileset:  R[map[2].r],
+        layerCount: map[3],
+        mapWidth:   map[4]  | (map[5]  << 8),
+        mapHeight:  map[6]  | (map[7]  << 8),
+        tileWidth:  map[8]  | (map[9]  << 8),
+        tileHeight: map[10] | (map[11] << 8)
+    };
+
+    y += CAMERA_Y|0;
+    x += CAMERA_X|0;
+
+    let layer = 12;
+    const tse = header.tileset;
+
+    for (let i = 0, max = header.layerCount; i < max; ++i) {
+        switch (map[layer]) {
+        case 0:
+            layer++;
+            if (i == layerNumber) {
+                const mapStride = header.mapWidth;
+                const mapHeight = header.mapHeight;
+                const tileHeight = header.tileHeight;
+                const tileWidth = header.tileWidth;
+
+                if (y < 0) {
+                    y %= mapHeight * tileHeight;
+                    y += mapHeight * tileHeight;
+                }
+
+                if (x < 0) {
+                    x %= mapStride * tileWidth;
+                    x += mapStride * tileWidth;
+                }
+
+                let row = (y / tileHeight | 0) % mapHeight;
+                let col = (x /  tileWidth | 0)  % mapStride;
+                let id = map[layer + row * mapStride + col];
+
+                if (id == 0)
+                    return 0;
+
+                let data = tse[(id - 1) * 2 + 1] & 0xFFFF;
+
+                if (data == 0)
+                    return 0;
+
+                let hashmap = data;
+                const length = tse[hashmap++];
+                for (let j = 0; j < length; ++j, hashmap += 2) {
+                    let obj = tse[hashmap];
+                    if (obj && typeof obj == "object" && obj.h == key) {
+                        return tse[hashmap + 1];
+                    }
+                }
+
+                return 0;
+            }
+            layer += header.mapHeight * header.mapWidth;
+            break;
+        case 1:
+            layer++;
+            break;
+        default:
+            return 0;
+        }
+    }
+
+    return 0;
+
+}
+
 function setTileMap(map) {
     _internal.map = map;
 }
@@ -379,9 +626,7 @@ function getHeight(texture){
 }
 
 function clear(){
-    let pen = _internal.pen;
-    let rgb = (pen.r|0) | ((pen.g|0) << 8) | ((pen.b|0) << 16) | (0xFF << 24);
-    _internal.fb32.fill(rgb);
+    _internal.renderQueue.length = 0;
 }
 
 function blitInternal(x, y, angle, scale) {
