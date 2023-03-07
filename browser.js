@@ -7,6 +7,7 @@ const _internal = {
     updateFrequency: 1000 / 30,
     framebuffer:null,
     pen: {r:0, g:0, b:0, a:255},
+    clearColor: {r:0, g:0, b:0, a:255},
     recolor: 0,
     mirrored: false,
     flipped: false,
@@ -73,7 +74,7 @@ addEventListener('DOMContentLoaded', _=>{
                     update(now);
                 render(now);
 
-                let pen = _internal.pen;
+                let pen = _internal.clearColor;
                 let rgb = (pen.r|0) | ((pen.g|0) << 8) | ((pen.b|0) << 16) | (0xFF << 24);
                 if (rgb) {
                     _internal.fb32.fill(rgb);
@@ -627,6 +628,7 @@ function getHeight(texture){
 
 function clear(){
     _internal.renderQueue.length = 0;
+    Object.assign(_internal.clearColor, _internal.pen);
 }
 
 function blitInternal(x, y, angle, scale) {
