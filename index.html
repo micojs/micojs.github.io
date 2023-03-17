@@ -452,7 +452,7 @@
        }
 
       </style>
-      <script src="index.min.js?nc=24"></script>
+      <script src="index.min.js?nc=25"></script>
       <script>
        var require = { paths: { vs: './monaco/vs' } };
       </script>
@@ -491,16 +491,17 @@
             <div id="previewcontrols">
               <select id="platform" readwrite-value="platform">
                 <option value="meta">Gamebuino Meta</option>
+                <option value="galuni">Galactic Unicorn</option>
                 <option value="pokitto">Pokitto</option>
                 <option value="espboy">ESPBoy</option>
                 <option value="pico">PicoSystem</option>
                 <option value="blit">32Blit</option>
-                <!-- <option value="metro">Metro M4</option> -->
               </select>
               <select id="zoom" bind-change="resize">
                 <option value="1">1x</option>
                 <option value="2">2x</option>
                 <option value="4">4x</option>
+                <option value="8">8x</option>
               </select>
               <button class="previewbutton" id="run" bind-click="toggleRun">Run</button>
               <button class="previewbutton" id="export" bind-click="export">Build</button>
