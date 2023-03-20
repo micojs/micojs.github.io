@@ -22,25 +22,25 @@ const _internal = {
 
 addEventListener('DOMContentLoaded', _=>{
     document.body.addEventListener('keydown', event => {
-        if (event.code == "ArrowUp" || event.code == "KeyI") UP = true;
-        else if (event.code == "ArrowDown" || event.code == "KeyK") DOWN = true;
-        else if (event.code == "ArrowLeft" || event.code == "KeyJ") LEFT = true;
-        else if (event.code == "ArrowRight" || event.code == "KeyL") RIGHT = true;
-        else if (event.code == "KeyA" || event.code == "KeyQ" || event.code == "Control") A = true;
-        else if (event.code == "KeyS" || event.code == "Shift") B = true;
-        else if (event.code == "KeyD" || event.code == "KeyZ") D = true;
-        else if (event.code == "KeyF" || event.code == "KeyX") C = true;
+        if (event.code == "ArrowUp" || event.code == "KeyI") _internal.UP = true;
+        else if (event.code == "ArrowDown" || event.code == "KeyK") _internal.DOWN = true;
+        else if (event.code == "ArrowLeft" || event.code == "KeyJ") _internal.LEFT = true;
+        else if (event.code == "ArrowRight" || event.code == "KeyL") _internal.RIGHT = true;
+        else if (event.code == "KeyA" || event.code == "KeyQ" || event.code == "Control") _internal.A = true;
+        else if (event.code == "KeyS" || event.code == "Shift") _internal.B = true;
+        else if (event.code == "KeyD" || event.code == "KeyZ") _internal.D = true;
+        else if (event.code == "KeyF" || event.code == "KeyX") _internal.C = true;
     });
 
     document.body.addEventListener('keyup', event => {
-        if (event.code == "ArrowUp" || event.code == "KeyI") UP = false;
-        else if (event.code == "ArrowDown" || event.code == "KeyK") DOWN = false;
-        else if (event.code == "ArrowLeft" || event.code == "KeyJ") LEFT = false;
-        else if (event.code == "ArrowRight" || event.code == "KeyL") RIGHT = false;
-        else if (event.code == "KeyA" || event.code == "KeyQ" || event.code == "Control") A = false;
-        else if (event.code == "KeyS" || event.code == "Shift") B = false;
-        else if (event.code == "KeyD" || event.code == "KeyZ") D = false;
-        else if (event.code == "KeyF" || event.code == "KeyX") C = false;
+        if (event.code == "ArrowUp" || event.code == "KeyI") _internal.UP = false;
+        else if (event.code == "ArrowDown" || event.code == "KeyK") _internal.DOWN = false;
+        else if (event.code == "ArrowLeft" || event.code == "KeyJ") _internal.LEFT = false;
+        else if (event.code == "ArrowRight" || event.code == "KeyL") _internal.RIGHT = false;
+        else if (event.code == "KeyA" || event.code == "KeyQ" || event.code == "Control") _internal.A = false;
+        else if (event.code == "KeyS" || event.code == "Shift") _internal.B = false;
+        else if (event.code == "KeyD" || event.code == "KeyZ") _internal.D = false;
+        else if (event.code == "KeyF" || event.code == "KeyX") _internal.C = false;
     });
 
     const ctx = canvas.getContext("2d");
@@ -68,6 +68,16 @@ addEventListener('DOMContentLoaded', _=>{
                 } else {
                     updateCount += updateDelta;
                 }
+
+                UP = _internal.UP;
+                DOWN = _internal.DOWN;
+                LEFT = _internal.LEFT;
+                RIGHT = _internal.RIGHT;
+                A = _internal.A;
+                B = _internal.B;
+                D = _internal.D;
+                C = _internal.C;
+
                 let startUpdate = performance.now();
                 let partial = delta / updateDelta;
                 for (let i = 0; i < updateDelta; ++i)
@@ -339,18 +349,16 @@ addEventListener('DOMContentLoaded', _=>{
     }
 
     function renderMap(map) {
-        let tileset = R[map[2].r];
-
         header = {
-            tileset:  R[map[2].r],
-            layerCount: map[3],
-            mapWidth:   map[4]  | (map[5]  << 8),
-            mapHeight:  map[6]  | (map[7]  << 8),
-            tileWidth:  map[8]  | (map[9]  << 8),
-            tileHeight: map[10] | (map[11] << 8)
+            layerCount: map[2],
+            tileset:  R[map[4].r],
+            mapWidth:   map[ 8] | (map[ 9] << 8),
+            mapHeight:  map[10] | (map[11] << 8),
+            tileWidth:  map[12] | (map[13] << 8),
+            tileHeight: map[14] | (map[15] << 8)
         };
 
-        mapCursor = 12;
+        mapCursor = 16;
 
         for (let i = 0, max = header.layerCount; i < max; ++i) {
             switch (map[mapCursor++]) {
@@ -516,19 +524,20 @@ function getTileProperty(x, y, key) {
 
     let map = _internal.map;
 
-    const header = {
-        tileset:  R[map[2].r],
-        layerCount: map[3],
-        mapWidth:   map[4]  | (map[5]  << 8),
-        mapHeight:  map[6]  | (map[7]  << 8),
-        tileWidth:  map[8]  | (map[9]  << 8),
-        tileHeight: map[10] | (map[11] << 8)
+    header = {
+        layerCount: map[2],
+        tileset:  R[map[4].r],
+        mapWidth:   map[ 8] | (map[ 9] << 8),
+        mapHeight:  map[10] | (map[11] << 8),
+        tileWidth:  map[12] | (map[13] << 8),
+        tileHeight: map[14] | (map[15] << 8)
     };
+
+    let layer = 16;
 
     y += CAMERA_Y|0;
     x += CAMERA_X|0;
 
-    let layer = 12;
     const tse = header.tileset;
 
     for (let i = 0, max = header.layerCount; i < max; ++i) {
@@ -589,7 +598,16 @@ function getTileProperty(x, y, key) {
 }
 
 function setTileMap(map) {
-    _internal.map = map;
+    const u32 = Uint32Array.from(map);
+    const u8 = new Uint8Array(u32.buffer);
+    const out = Array.from(u8);
+    for (let i = 0; i < map.length; ++i) {
+        let value = map[i];
+        if (value && typeof value == "object") {
+            out[i << 2] = value;
+        }
+    }
+    _internal.map = out;
 }
 
 function setFont(font){

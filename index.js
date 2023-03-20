@@ -1309,7 +1309,8 @@ class CPP {
           if (!src || typeof src == "string") continue;
           if (!Array.isArray(src)) continue;
           const type = src.type || 'uintptr_t';
-          acc.push(`extern const ${type} ${res}[];`);
+          // acc.push(`extern const ${type} ${res}[];`);
+          acc.push(`extern RESOURCEDECL_T(${type}, ${res});`);
         }
         for (let res of resources) {
           const src = this.program.resourceData[res];
@@ -1344,11 +1345,12 @@ class CPP {
                 }
               }
               if (typeof el === 'number') {
-                out.push(el | 0);
+                out.push('0x' + (el | 0).toString(16));
                 continue;
               }
             }
-            acc.push(`const ${type} ${res}[] = {${out.join(',')}};`);
+            // acc.push(`const ${type} ${res}[] = {${out.join(',')}};`);
+            acc.push(`RESOURCEDECL_T(${type}, ${res}) = {${out.join(',')}};`);
           }
         }
         return acc.join('\n');
@@ -16412,8 +16414,8 @@ margin: auto;
 image-rendering: pixelated;
 }
 </style>
-<script src="assets.js?nc=7"></script>
-<script src="browser.js?nc=7"></script>
+<script src="assets.js?nc=8"></script>
+<script src="browser.js?nc=8"></script>
 <script>
 ${code}
 </script>
@@ -17506,9 +17508,6 @@ function save(name, data) {
 
 
     const blob = new Blob( [ data ], { type: 'application/octet-stream' } );
-    const objectURL = URL.createObjectURL( blob );
-
-    link.href = objectURL;
     link.href = URL.createObjectURL( blob );
     link.download =  name;
     link.click();
@@ -18260,8 +18259,8 @@ class ImageEditor {
                 // ]]
             ]]
         ]), {}, this);
-        this.#dom.tileset.value = this.metadata.tilemap.tileset;
-        this.#dom.mode.value = this.metadata.mode;
+        // this.#dom.tileset.value = this.metadata.tilemap.tileset;
+        // this.#dom.mode.value = this.metadata.mode;
     }
 
     commit() {
@@ -19229,6 +19228,12 @@ function normalizeBytes(arr) {
     return out;
 }
 
+function bytesToWords(bytes) {
+    while (bytes.length & 0x3)
+        bytes.push(0);
+    return Array.from(new Uint32Array(Uint8Array.from(bytes).buffer));
+}
+
 function bytesToLen(arr) {
     let out = 0;
     if (!Array.isArray(arr))
@@ -19397,8 +19402,8 @@ async function convertTMJ(name, datasrc, outfs, tileTable) {
 
     const header = [
         u16(0),                                   // map resource indicator
+        u16(data.layers.length),                  // layer count
         u32(0),                                   // tile set offset
-        data.layers.length & 0xFF,                // layer count
         u16(data.width), u16(data.height),        // map width, height
         u16(data.tilewidth), u16(data.tileheight) // tile width, height
     ];
@@ -19406,7 +19411,7 @@ async function convertTMJ(name, datasrc, outfs, tileTable) {
     const layers = [];
     const tiles = [];
     const out = [header, layers, tiles];
-    const outName = `/.R/${name.split('.')[0]}.u8`;
+    const outName = `/.R/${name.split('.')[0]}.u32`;
 
     for (let layer of data.layers) {
         if (layer.type == "tilelayer") {
@@ -19421,8 +19426,8 @@ async function convertTMJ(name, datasrc, outfs, tileTable) {
     tileTable.tileStart = tileStart;
 
     // outfs.writeFile(outName, bytesToStr(out));
-    const normalized = normalizeBytes(out);
-    normalized.splice(2, 4, {r:'TileTable'});
+    const normalized = bytesToWords(normalizeBytes(out));
+    normalized.splice(1, 1, {r:'TileTable'});
 
     outfs.writeFile(outName, JSON.stringify(normalized));
 }
@@ -24716,7 +24721,12 @@ class ua extends ca {
   }
 }
 const ga = async t => {
-  const e = await navigator.serial.requestPort();
+  const e = await navigator.serial.requestPort({
+    filters: [{
+      usbProductId: 29987,
+      usbVendorId: 6790
+    }]
+  });
   return t.log("Connecting..."), await e.open({
     baudRate: 115200
   }), t.log("Connected successfully."), new ca(e, t);
