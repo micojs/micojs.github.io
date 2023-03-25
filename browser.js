@@ -597,6 +597,93 @@ function getTileProperty(x, y, key) {
 
 }
 
+function scanTileMap(filter, callback) {
+    if (!filter)
+        return;
+    scanTileMapInternal(0, (x, y, properties, offset, len) => {
+        for (let key in filter) {
+            let match = false;
+            let value = filter[key];;
+
+            for (let i = 0; i < len; ++i ) {
+                if (key != properties[offset + i * 2].h)
+                    continue;
+                let pv = properties[offset + i * 2 + 1];
+                if (pv && pv.h)
+                    pv = pv.h;
+                if (value == pv) {
+                    match = true;
+                    break;
+                }
+            }
+
+            if (!match)
+                return;
+        }
+
+        callback(x, y);
+    });
+
+    function scanTileMapInternal(layerNumber, callback) {
+        let map = _internal.map;
+        if (!map)
+            return;
+
+        header = {
+            layerCount: map[2],
+            tileset:  R[map[4].r],
+            mapWidth:   map[ 8] | (map[ 9] << 8),
+            mapHeight:  map[10] | (map[11] << 8),
+            tileWidth:  map[12] | (map[13] << 8),
+            tileHeight: map[14] | (map[15] << 8)
+        };
+
+        let layer = 16;
+
+        const tse = header.tileset;
+        const mapStride = header.mapWidth;
+        const mapHeight = header.mapHeight;
+        const tileHeight = header.tileHeight;
+        const tileWidth = header.tileWidth;
+        const spriteX = (tileWidth / 2 - CAMERA_X)|0;
+        const spriteY = (tileHeight / 2 - CAMERA_Y)|0;
+
+        for (let i = 0, max = header.layerCount; i < max; ++i) {
+            switch (map[layer]) {
+            case 0:
+                layer++;
+                if (i == layerNumber) {
+                    let index = 0;
+                    for (let y = 0; y < mapHeight; ++y) {
+                        for (let x = 0; x < mapStride; ++x, ++index) {
+                            let id = map[layer + index];
+                            if (id == 0)
+                                continue;
+
+                            let data = tse[(id - 1) * 2 + 1] & 0xFFFF;
+                            if (data == 0)
+                                continue;
+
+                            let hashmap = data;
+                            const length = tse[hashmap++];
+                            callback(x * tileWidth + spriteX, y * tileHeight + spriteY, tse, hashmap, length);
+                        }
+                    }
+                    return;
+                }
+                layer += header.mapHeight * header.mapWidth;
+                break;
+            case 1:
+                layer++;
+                break;
+            default:
+                return;
+            }
+        }
+    }
+}
+
+
 function setTileMap(map) {
     const u32 = Uint32Array.from(map);
     const u8 = new Uint8Array(u32.buffer);
