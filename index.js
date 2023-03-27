@@ -632,6 +632,9 @@ const binOpName = {
   "<<": "shl",
   ">>": "shr",
   ">>>": "sru",
+  "N": "next",
+  "n": "kai",
+  "N=": "next",
   "+=": "add",
   "-=": "sub",
   "*=": "mul",
@@ -701,7 +704,9 @@ function encode(node, reg) {
         }
         return `js::get(${encode(ctx)}, ${encode(node.variable, false)})`;
       } else if (ctx instanceof ir.Scope) {
-        return encode(ctx.find(node.variable, true));
+        const child = ctx.find(node.variable, true);
+        if (!child) throw `No variable named ${node.variable}`;
+        return encode(child);
       }
   }
   return node.constructor.name;
@@ -1105,6 +1110,11 @@ class CPP {
             tmp.setDeclType("Float");
           }
         }
+        break;
+      case "next":
+        tmp.setDeclType("int32_t");
+        break;
+      case "kai":
         break;
       case "lt":
         tmp.setDeclType("int32_t");
@@ -1558,6 +1568,51 @@ class ProgramParser {
       this.scope.add(new ir.Literal(true));
     });
     this.push(block, _ => {
+      this.parse(node.body, node.body.type == "BlockStatement" ? block : null);
+    });
+  }
+  ForInStatement(node, block) {
+    block = block || new ir.Scope();
+    this.scope.add(block);
+    block.continuable = true;
+    block.breakable = true;
+    block.debug = 'forIn';
+    this.push(block, _ => {
+      const arr = new ir.Var();
+      block.add(arr);
+      const it = new ir.Var();
+      it.setDeclType("int32_t");
+      block.add(it);
+      let val;
+      this.push(block.addPreEnter(), preEnter => {
+        preEnter.add(new ir.LookUp(arr.id));
+        this.parse(node.right);
+        preEnter.add(new ir.AssignmentExpression('='));
+        preEnter.add(new ir.Pop());
+        preEnter.add(new ir.LookUp(it.id));
+        preEnter.add(new ir.Literal(-1));
+        preEnter.add(new ir.AssignmentExpression('='));
+        preEnter.add(new ir.Pop());
+        this.parse(node.left);
+        val = preEnter.find(node.left.declarations[0].id.name, true);
+        if (!val) this.error("Could not find iterator " + node.left.declarations[0].id.name);
+      });
+      this.push(block.addEnterCondition(), cond => {
+        cond.add(new ir.LookUp(arr.id));
+        cond.add(new ir.LookUp(it.id));
+        cond.add(new ir.BinaryExpression("N"));
+      });
+      this.push(block.addPreLoop(), preLoop => {});
+      this.push(block.addLoopCondition(), cond => {
+        cond.add(new ir.Literal(true));
+      });
+      block.add(new ir.LookUp(val.id));
+      block.add(new ir.LookUp(arr.id));
+      block.add(new ir.Deref());
+      block.add(new ir.LookUp(it.id));
+      block.add(new ir.Deref());
+      block.add(new ir.BinaryExpression("n"));
+      block.add(new ir.AssignmentExpression("="));
       this.parse(node.body, node.body.type == "BlockStatement" ? block : null);
     });
   }
@@ -2069,7 +2124,7 @@ class JSC {
                 rand,
                 abs, floor, round, ceil, sqrt,
                 cos, sin, atan2, tan,
-                min, max,
+                clamp, min, max,
                 vectorLength, angleDifference
                 `.trim().split(/\s*,\s*/);
     for (let name of stdcalls) this.addSysCall(name);
@@ -19434,8 +19489,8 @@ async function convertTMJ(name, datasrc, outfs, tileTable) {
     const data = JSON.parse(datasrc);
     const layerCount = [];
     const header = [
-        u16(0),                                   // map resource indicator
-        layerCount,                  // layer count
+        0, 0xFF,                                  // map resource indicator
+        layerCount,                               // layer count
         u32(0),                                   // tile set offset
         u16(data.width), u16(data.height),        // map width, height
         u16(data.tilewidth), u16(data.tileheight) // tile width, height
@@ -39009,6 +39064,10 @@ declare function atan2(y:number, x:number):number;
  */
 declare function tan(angle:number):number;
 
+/**
+ * Returns value restricted to the range defined by min and max, inclusive.
+ */
+declare function clamp(value, min, max):number;
 
 /**
  * Returns the lowest of the given values

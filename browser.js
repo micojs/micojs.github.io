@@ -433,6 +433,10 @@ const PI = Math.PI;
 const HALF_PI = PI / 2;
 const TWO_PI = PI * 2;
 
+function clamp(value, min, max) {
+    return Math.min(Math.max(value, min), max);
+}
+
 function vectorLength(...args) {
     let len = args.length;
     let ret = 0;
@@ -685,6 +689,8 @@ function scanTileMap(filter, callback) {
 
 
 function setTileMap(map) {
+    if (map === _internal.mapsrc)
+        return;
     const u32 = Uint32Array.from(map);
     const u8 = new Uint8Array(u32.buffer);
     const out = Array.from(u8);
@@ -695,6 +701,7 @@ function setTileMap(map) {
         }
     }
     _internal.map = out;
+    _internal.mapsrc = map;
 }
 
 function setFont(font){
@@ -722,13 +729,46 @@ function readByte(arg, offset) {
 function getWidth(texture){
     if (!texture)
         return _internal.framebuffer.width;
-    return texture[0];
+
+    if (texture[0] & 0xFF) // bitmap with small header
+        return texture[0] & 0xFF;
+
+    if ((texture[0] >> 8) & 0xFF === 0xFF) { // tilemap
+        let oldmap = _internal.mapsrc;
+        if (oldmap != texture)
+            setTileMap(texture);
+
+        let map = _internal.map;
+        let mapWidth =   map[ 8] | (map[ 9] << 8);
+        let tileWidth =  map[12] | (map[13] << 8);
+        setTileMap(oldmap);
+        return mapWidth * tileWidth;
+    }
+
+    return (texture[1] << 8) | texture[2];
 }
 
 function getHeight(texture){
     if (!texture)
         return _internal.framebuffer.height;
-    return texture[1];
+
+    if (texture[0] & 0xFF) // bitmap with small header
+        return texture[1] & 0xFF;
+
+    if ((texture[0] >> 8) & 0xFF === 0xFF) { // tilemap
+        let oldmap = _internal.mapsrc;
+        if (oldmap != texture)
+            setTileMap(texture);
+
+        let map = _internal.map;
+        let mapHeight =  map[10] | (map[11] << 8);
+        let tileHeight = map[14] | (map[15] << 8);
+
+        setTileMap(oldmap);
+        return mapHeight * tileHeight;
+    }
+
+    return (texture[3] << 8) | texture[4];
 }
 
 function clear(){
