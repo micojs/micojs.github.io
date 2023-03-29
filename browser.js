@@ -2,6 +2,14 @@ var UP = false, DOWN = false, LEFT = false, RIGHT = false, A = false, B = false,
 var FRAMETIME = 1, CAMERA_X = 0, CAMERA_Y = 0;
 
 const _internal = {
+    UP: false,
+    DOWN: false,
+    LEFT: false,
+    RIGHT: false,
+    A: false,
+    B: false,
+    C: false,
+    D: false,
     fb32:null,
     font:R.fontMini,
     updateFrequency: 1000 / 30,
@@ -419,6 +427,7 @@ function rand(...args) {
 }
 
 const abs = Math.abs;
+const sign = Math.sign;
 const floor = Math.floor;
 const round = Math.round;
 const ceil = Math.ceil;
@@ -581,7 +590,10 @@ function getTileProperty(x, y, key) {
                 for (let j = 0; j < length; ++j, hashmap += 2) {
                     let obj = tse[hashmap];
                     if (obj && typeof obj == "object" && obj.h == key) {
-                        return tse[hashmap + 1];
+                        let value = tse[hashmap + 1];
+                        if (value && (typeof value == "object") && ("h" in value))
+                            value = hash(value.h);
+                        return value;
                     }
                 }
 
@@ -724,6 +736,38 @@ function setRecolor(v) {_internal.recolor = v|0;}
 
 function readByte(arg, offset) {
     return arg[offset|0];
+}
+
+function hash(str) {
+    let v1 = 5381;
+    let v2 = 2166136261;
+    let v3 = 0;
+
+    let cursor = 0;
+    let c;
+
+    while (c = str.charCodeAt(cursor++)) {
+        c = (c - '0'.charCodeAt(0)) >>> 0;
+        if (c > 9)
+            break;
+        let copy = v3 >>> 0;
+        v3 = v3 * 10 + c;
+        if (copy > v3) {
+            cursor--;
+            break;
+        }
+    }
+
+    if (cursor <= 5 && !str.charCodeAt(cursor - 1))
+        return v3;
+
+    cursor = 0;
+    while (c = (str.charCodeAt(cursor++) >>> 0)) {
+        v1 = ((v1 * 251) ^ c) >>> 0;
+        v2 = ((v2 ^ c) * 16777619) >>> 0;
+    }
+
+    return ((v1 * 13 + v2) & 0xFFFFFFFF) >>> 0;
 }
 
 function getWidth(texture){

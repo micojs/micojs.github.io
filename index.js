@@ -682,7 +682,7 @@ function local(node) {
 function encode(node, reg) {
   switch (node.constructor.name) {
     case "Method":
-      if (node.isNative && node.name) return node.name;
+      if (node.isNative) return node.isNative;
     // if (node.captures)
     //     node = node.parent.method.capturers[node.id].ctx; // cpp.method.capturers[node.id].ctx;
 
@@ -2122,9 +2122,9 @@ class JSC {
     const stdcalls = `
                 debug, Array,
                 rand,
-                abs, floor, round, ceil, sqrt,
+                abs, sign, floor, round, ceil, sqrt,
                 cos, sin, atan2, tan,
-                clamp, min, max,
+                clamp, min, max, hash:hashjs,
                 vectorLength, angleDifference
                 `.trim().split(/\s*,\s*/);
     for (let name of stdcalls) this.addSysCall(name);
@@ -2198,8 +2198,9 @@ class JSC {
   }
   addSysCall(...names) {
     names.forEach(name => {
-      const func = new ir.Method(name);
-      func.isNative = true;
+      let parts = name.split(':');
+      const func = new ir.Method(parts[0]);
+      func.isNative = parts[1] || parts[0];
       this.program.main.add(func);
     });
   }
@@ -39020,9 +39021,19 @@ declare function rand(min:number, max:number):number;
 declare function rand(min:number, max:number, ignored:any):number;
 
 /**
+ * Returns a 32-bit hash of the given string
+ */
+declare function hash(str:string):number;
+
+/**
  * Returns the absolute value of value
  */
 declare function abs(value:number):number;
+
+/**
+ * Returns the sign of value (either 1, 0 or -1)
+ */
+declare function sign(value:number):number;
 
 /**
  * Returns value rounded down to the nearest integer
