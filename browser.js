@@ -196,7 +196,7 @@ addEventListener('DOMContentLoaded', _=>{
                 if (id) {
                     id--;
                     src = R[tse[id * 2].r];
-                    let srcStride = src[0];
+                    let srcStride = src[0] || ((src[1] << 8) | src[2]);
                     let srcoffset = (tse[id * 2].o|0) + (tileHeight - startRowHeight) * srcStride + (tileWidth - startColWidth);
                     let cursor = line;
                     for (let i = 0; i < startRowHeight; ++i, srcoffset += srcStride, cursor += screenWidth)
@@ -213,7 +213,7 @@ addEventListener('DOMContentLoaded', _=>{
                     continue;
                 id--;
                 src = R[tse[id * 2].r];
-                let srcStride = src[0];
+                let srcStride = src[0] || ((src[1] << 8) | src[2]);
                 let srcoffset = (tse[id * 2].o|0) + (tileHeight - startRowHeight) * srcStride;
                 let cursor = line + lineOffset;
                 for (let i = 0; i < startRowHeight; ++i, srcoffset += srcStride, cursor += screenWidth)
@@ -225,7 +225,7 @@ addEventListener('DOMContentLoaded', _=>{
                 if (id) {
                     id--;
                     src = R[tse[id * 2].r];
-                    let srcStride = src[0];
+                    let srcStride = src[0] || ((src[1] << 8) | src[2]);
                     let srcoffset = (tse[id * 2].o|0) + (tileHeight - startRowHeight) * srcStride;
                     let cursor = line + lineOffset;
                     for (let i = 0; i < startRowHeight; ++i, srcoffset += srcStride, cursor += screenWidth)
@@ -253,7 +253,7 @@ addEventListener('DOMContentLoaded', _=>{
                 if (id) {
                     id--;
                     src = R[tse[id * 2].r];
-                    let srcStride = src[0];
+                    let srcStride = src[0] || ((src[1] << 8) | src[2]);
                     let srcoffset = (tse[id * 2].o|0) + (tileWidth - startColWidth);
                     let cursor = line;
                     for (let i = 0; i < tileHeight; ++i, srcoffset += srcStride, cursor += screenWidth)
@@ -271,7 +271,7 @@ addEventListener('DOMContentLoaded', _=>{
                 id--;
                 src = R[tse[id * 2].r];
                 let srcoffset = (tse[id * 2].o|0);
-                let srcStride = src[0];
+                let srcStride = src[0] || ((src[1] << 8) | src[2]);
                 let cursor = line + lineOffset;
                 for (let i = 0; i < tileHeight; ++i, srcoffset += srcStride, cursor += screenWidth)
                     P_P(srcoffset, cursor, tileWidth);
@@ -282,7 +282,7 @@ addEventListener('DOMContentLoaded', _=>{
                     continue;
                 id--;
                 src = R[tse[id * 2].r];
-                let srcStride = src[0];
+                let srcStride = src[0] || ((src[1] << 8) | src[2]);
                 let srcoffset = (tse[id * 2].o|0);
                 let cursor = line + lineOffset;
                 for (let i = 0; i < tileHeight; ++i, srcoffset += srcStride, cursor += screenWidth)
@@ -307,7 +307,7 @@ addEventListener('DOMContentLoaded', _=>{
                 if (id) {
                     id--;
                     src = R[tse[id * 2].r];
-                    let srcStride = src[0];
+                    let srcStride = src[0] || ((src[1] << 8) | src[2]);
                     let srcoffset = (tse[id * 2].o|0) + (tileWidth - startColWidth);
                     let cursor = line;
                     for (let i = 0; i < endRowHeight; ++i, srcoffset += srcStride, cursor += screenWidth)
@@ -324,7 +324,7 @@ addEventListener('DOMContentLoaded', _=>{
                     continue;
                 id--;
                 src = R[tse[id * 2].r];
-                let srcStride = src[0];
+                let srcStride = src[0] || ((src[1] << 8) | src[2]);
                 let srcoffset = (tse[id * 2].o|0);
                 let cursor = line + lineOffset;
                 for (let i = 0; i < endRowHeight; ++i, srcoffset += srcStride, cursor += screenWidth)
@@ -336,7 +336,7 @@ addEventListener('DOMContentLoaded', _=>{
                 if (id) {
                     id--;
                     src = R[tse[id * 2].r];
-                    let srcStride = src[0];
+                    let srcStride = src[0] || ((src[1] << 8) | src[2]);
                     let srcoffset = (tse[id * 2].o|0);
                     let cursor = line + lineOffset;
                     for (let i = 0; i < endRowHeight; ++i, srcoffset += srcStride, cursor += screenWidth)
