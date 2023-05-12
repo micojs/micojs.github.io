@@ -344,11 +344,18 @@ class Scope extends Expr {
     if (this.transparent && this.parent) return this.parent.has(name, recursive);
     return name in this.index || recursive && this.parent && this.parent.has(name, true);
   }
-  find(name, recursive) {
+  find(name, recursive, create) {
     if (this.transparent && this.parent) return this.parent.find(name, recursive);
     var ret = this.index[name];
     if (ret) return ret;
-    if (!recursive || !this.parent) return;
+    if (!recursive || !this.parent) {
+      if (create) {
+        const ret = new Var('var', name);
+        this.add(ret);
+        return ret;
+      }
+      return;
+    }
     ret = this.parent.find(name, true);
     if (ret && ret.parent.method != this.method && ret.parent.method.parent) {
       ret = this.method.capture(ret);
@@ -464,7 +471,7 @@ class Method extends Scope {
     super();
     this.name = name;
     this.method = this;
-    this.args = new Var();
+    this.args = new Var("const", "arguments");
     this.add(this.args);
     this.that = new Var("const", "this");
     this.add(this.that);
@@ -587,6 +594,10417 @@ class Error {
 exports.Error = Error;
 
 },{}],2:[function(require,module,exports){
+(function (global){(function (){
+"use strict";
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.parser = parser;
+// 'use strict';
+
+var isArray = Array.isArray;
+function getOpName(op) {
+  if (op.prototype._astname) {
+    return op.prototype._astname;
+  }
+  throw new Error("Coudlnt decode operator name for: " + (op.name || op.toString()));
+}
+function abort(why) {
+  console.log(new Error("ABORT:" + why).stack);
+  throw new Error(why);
+}
+function isExpression(n) {
+  return /Expression$/.test(n.type);
+}
+var idx = 0;
+function createTempName(hint) {
+  return '__temp$' + hint + '$' + idx++;
+}
+function ensureStatement(s) {
+  var f = s;
+  if (!isArray(s)) f = [f];
+  for (var i = 0; i < f.length; ++i) {
+    var v = f[i];
+    if (isExpression(v)) {
+      f[i] = {
+        type: "ExpressionStatement",
+        expression: v
+      };
+    }
+  }
+  if (isArray(s)) return s;else return f[0];
+}
+function ident(n) {
+  return {
+    type: "Identifier",
+    name: n.valueOf()
+  };
+}
+function member(o, p) {
+  return {
+    type: "MemberExpression",
+    object: o,
+    property: p,
+    computed: false
+  };
+}
+function literal(v) {
+  if (typeof v === 'object') v = v.valueOf();
+  if (typeof v === 'number' && 1 / v !== 1 / Math.abs(v)) {
+    return {
+      type: "UnaryExpression",
+      argument: literal(-v),
+      operator: '-'
+    };
+  }
+  return {
+    type: "Literal",
+    value: v,
+    raw: JSON.stringify(v)
+  };
+}
+function binOp(left, op, right) {
+  return {
+    type: "BinaryExpression",
+    left: left,
+    right: right,
+    operator: op
+  };
+}
+function logicOp(left, op, right) {
+  return {
+    type: "LogicalExpression",
+    left: left,
+    right: right,
+    operator: op
+  };
+}
+function ternary(cond, a, b) {
+  return {
+    type: "ConditionalExpression",
+    test: cond,
+    consequent: a,
+    alternate: b
+  };
+}
+function var_(name, init) {
+  return {
+    type: "VariableDeclaration",
+    kind: 'var',
+    declarations: [{
+      type: "VariableDeclarator",
+      id: name,
+      init: init ? init : undefined
+    }]
+  };
+}
+function transform(node, ctx) {
+  //console.log(node.lineno, node.col_offset);
+  var result = dispatch(node, ctx);
+  if (node.range) result.range = [node.range[0], node.range[1]];
+  if (node.loc) result.loc = node.loc;
+  result.str = node.str;
+  return result;
+}
+function dispatch(node, ctx) {
+  if (!ctx.locals) ctx.locals = Object.create(null);
+  if (!node) {
+    console.log("WAT!", new Error().stack);
+    throw new Error("What?");
+  }
+  if (isArray(node)) {
+    var body = [];
+    for (var i = 0; i < node.length; ++i) {
+      var r = transform(node[i], ctx);
+      if (isArray(r)) body.push.apply(body, r);else body.push(r);
+    }
+    return body;
+  }
+  switch (node._astname) {
+    case 'Attribute':
+      return transformAttribute(node, ctx);
+    case 'Assign':
+      return transformAssign(node, ctx);
+    case 'AugAssign':
+      return transformAugAssign(node, ctx);
+    case 'BinOp':
+      return transformBinOp(node, ctx);
+    case 'BoolOp':
+      return transformBoolOp(node, ctx);
+    case 'Break':
+      return transformBreak(node, ctx);
+    case 'Call':
+      return transformCall(node, ctx);
+    case 'ClassDef':
+      return transformClassDef(node, ctx);
+    case 'Continue':
+      return tranformContinue(node, ctx);
+    case 'Compare':
+      return transformCompare(node, ctx);
+    case 'Dict':
+      return transformDict(node, ctx);
+    case 'Delete':
+      return transformDel(node, ctx);
+    case 'Expr':
+      return transformExpr(node, ctx);
+    case 'For':
+      return transformFor(node, ctx);
+    case 'FunctionDef':
+      return transformFunctionDef(node, ctx);
+    case 'GeneratorExp':
+      return transformListComp(node, ctx);
+    //TODO: Make this seperate
+    case 'Global':
+      return transformGlobal(node, ctx);
+    case 'If':
+      return transformIf(node, ctx);
+    case 'Import':
+      return NoOp();
+    case 'Lambda':
+      return transformLambda(node, ctx);
+    case 'List':
+      return transformList(node, ctx);
+    case 'ListComp':
+      return transformListComp(node, ctx);
+    case 'Module':
+      return transformModule(node, ctx);
+    case 'Name':
+      return transformName(node, ctx);
+    case 'Print':
+      return transformPrint(node, ctx);
+    case 'Return':
+      return transformReturn(node, ctx);
+    case 'Str':
+      return transformStr(node, ctx);
+    case 'Subscript':
+      return transformSubscript(node, ctx);
+    case 'Tuple':
+      return transformTuple(node, ctx);
+    case 'Num':
+      return transformNum(node, ctx);
+    case 'Pass':
+      return transformPass(node, ctx);
+    case 'UnaryOp':
+      return transformUnaryOp(node, ctx);
+    case 'While':
+      return transformWhile(node, ctx);
+    default:
+      console.log("Dont know how to transform: " + node._astname);
+      console.log(JSON.stringify(node, null, '  '));
+      throw new Error("Dont know how to transform: " + node._astname);
+  }
+}
+function NoOp() {
+  return [];
+}
+function makeVariableName(name) {
+  var parts = Array.isArray(name) ? name : name.split(/\./g);
+  if (parts.length === 1) return ident(name);
+  var prop = parts.pop();
+  return member(makeVariableName(parts), ident(prop));
+}
+function transformAttribute(node, ctx) {
+  var n = node.attr;
+  if (n._astname) n = transform(n, ctx);else n = {
+    type: 'Identifier',
+    name: n.valueOf()
+  };
+  return member(transform(node.value, ctx), n);
+}
+function transformAugAssign(node, ctx) {
+  //TODO: We need to not inject left into the code twice
+  //as it could have side effects.
+  var right = transform(node.value, ctx);
+  var left = transform(node.target, ctx);
+  var tn = createTempName("left");
+  var opName = getOpName(node.op);
+  return [var_(ident(tn), left), ensureStatement({
+    type: "AssignmentExpression",
+    operator: '=',
+    left: left,
+    right: createBinOp(left, opName, right)
+  })];
+}
+function transformAssign(node, ctx) {
+  var results = [];
+  for (var i = 0; i < node.targets.length; ++i) {
+    var left = node.targets[i];
+    if (ctx.writeTarget) {
+      left = member(ctx.writeTarget, transform(left, ctx));
+    }
+    results.push.apply(results, createTupleUnpackingAssign(left, transform(node.value, ctx), ctx));
+  }
+  if (results.length == 1) return results[0];
+  return {
+    type: "BlockStatement",
+    body: results
+  };
+}
+function createBinOp(left, op, right) {
+  if (op === 'FloorDiv') {
+    return {
+      type: "CallExpression",
+      callee: makeVariableName('Math.floor'),
+      arguments: [{
+        type: "BinaryExpression",
+        left: left,
+        right: right,
+        operator: '/'
+      }]
+    };
+  }
+
+  // var fxOps = {
+  // 	"Add": "__pythonRuntime.ops.add",
+  // 	"Mult": "__pythonRuntime.ops.multiply",
+  // 	"Pow": "Math.pow"
+  // };
+
+  // if ( op in fxOps  ) {
+  // 	var call = {
+  // 		type: "CallExpression",
+  // 		callee: makeVariableName(fxOps[op]),
+  // 		arguments: [left, right]
+  // 	};
+  // 	return call;
+  // }
+
+  var operators = {
+    "Add": "+",
+    "Sub": "-",
+    "Mod": "%",
+    "Div": "/",
+    "Mult": "*",
+    "BitAnd": "&",
+    "BitOr": "|",
+    'BitXor': '^',
+    "LShift": "<<",
+    "RShift": ">>"
+  };
+  if (!(op in operators)) abort("Unknown binary operator: " + op);
+  return binOp(left, operators[op], right);
+}
+function transformBinOp(node, ctx) {
+  var left = transform(node.left, ctx);
+  var right = transform(node.right, ctx);
+  return createBinOp(left, getOpName(node.op), right);
+}
+function transformBoolOp(node, ctx) {
+  var fvals = new Array(node.values.length);
+  for (var i = 0; i < node.values.length; ++i) {
+    fvals[i] = transform(node.values[i], ctx);
+  }
+  var opName = getOpName(node.op);
+  var operators = {
+    'And': '&&',
+    'Or': '||'
+  };
+  if (!(opName in operators)) abort("Unknown bool opeartor: " + opName);
+  var opstr = operators[opName];
+  var result = fvals.pop();
+  while (fvals.length > 0) {
+    result = logicOp(fvals.pop(), opstr, result);
+  }
+
+  //TODO: Support || as well?
+  return result;
+}
+function transformBreak(node, ctx) {
+  return {
+    type: "BreakStatement"
+  };
+}
+function transformCall(node, ctx) {
+  var builtins = ['len'];
+  if (node.func._astname == 'Name') {
+    switch (node.func.id.v) {
+      case 'len':
+        return {
+          type: "MemberExpression",
+          object: transform(node.args[0], ctx),
+          property: {
+            type: "Identifier",
+            name: "length"
+          }
+        };
+      case 'all':
+      case 'ord':
+      case 'sum':
+      case 'any':
+      case 'str':
+      case 'chr':
+      case 'ascii':
+      case 'divmod':
+      case 'range':
+      case 'enumerate':
+      case 'round':
+      case 'filter':
+      case 'abs':
+      case 'float':
+      case 'int':
+      case 'hex':
+      case 'tuple':
+      case 'map':
+      case 'bool':
+      case 'max':
+      case 'sorted':
+      case 'min':
+      case 'list':
+      case 'oct':
+      case 'pow':
+      case 'reversed':
+      case 'repr':
+        return {
+          type: 'CallExpression',
+          callee: makeVariableName(node.func.id.v),
+          arguments: transform(node.args, ctx)
+        };
+      case 'dict':
+        var args = [];
+        for (var i = 0; i < node.keywords.length; ++i) {
+          args.push({
+            type: "ArrayExpression",
+            elements: [literal(node.keywords[i].arg.v), transform(node.keywords[i].value, ctx)]
+          });
+        }
+        return {
+          type: "NewExpression",
+          callee: makeVariableName('__pythonRuntime.objects.dict'),
+          arguments: args
+        };
+    }
+  }
+  var args = transform(node.args, ctx);
+  if (node.keywords.length > 0) {
+    var paramsDict = {
+      type: "ObjectExpression",
+      properties: [{
+        type: "Property",
+        key: ident("__kwp"),
+        value: literal(true)
+      }]
+    };
+    for (var i = 0; i < node.keywords.length; ++i) {
+      var k = node.keywords[i];
+      paramsDict.properties.push({
+        type: "Property",
+        key: ident(k.arg.v),
+        value: transform(k.value, ctx)
+      });
+    }
+    var extraArg = {
+      type: "CallExpression",
+      callee: makeVariableName('__pythonRuntime.utils.createParamsObj'),
+      arguments: [paramsDict]
+    };
+    args.push(extraArg);
+  }
+  return {
+    type: "CallExpression",
+    callee: transform(node.func, ctx),
+    arguments: args
+  };
+}
+function transformClassDef(node, ctx) {
+  var body = [];
+  var proto = member(ident(node.name), ident('prototype'));
+  var nctx = {
+    writeTarget: proto,
+    inClass: true,
+    locals: Object.create(null)
+  };
+  if (node.bases.length > 1) alert("Multiple base classes not supported.");
+  var base = node.bases.length > 0 ? transform(node.bases[0], ctx) : undefined;
+  var ctorBody = [];
+  ctorBody.push({
+    type: "VariableDeclaration",
+    kind: 'var',
+    declarations: [{
+      type: "VariableDeclarator",
+      id: ident('that'),
+      init: {
+        type: "ThisExpression"
+      }
+    }]
+  });
+  ctorBody.push({
+    type: "IfStatement",
+    test: {
+      type: "UnaryExpression",
+      argument: binOp(ident('that'), "instanceof", ident(node.name)),
+      operator: "!"
+    },
+    consequent: ensureStatement({
+      type: "AssignmentExpression",
+      left: ident('that'),
+      right: {
+        type: "CallExpression",
+        callee: makeVariableName('Object.create'),
+        arguments: [proto]
+      },
+      operator: '='
+    })
+  });
+  ctorBody.push({
+    type: "IfStatement",
+    test: {
+      type: "CallExpression",
+      callee: member(proto, ident('hasOwnProperty')),
+      arguments: [literal('__init__')]
+    },
+    consequent: ensureStatement({
+      type: "CallExpression",
+      callee: member(member(proto, ident('__init__')), ident('apply')),
+      arguments: [ident('that'), ident('arguments')]
+    })
+  });
+  if (base) {
+    ctorBody.push(ensureStatement({
+      type: "CallExpression",
+      callee: {
+        type: "MemberExpression",
+        object: base,
+        property: ident('apply'),
+        computed: false
+      },
+      arguments: [ident('that'), ident('arguments')]
+    }));
+  }
+  ctorBody.push({
+    type: "ReturnStatement",
+    argument: ident('that')
+  });
+  body.push({
+    type: "FunctionDeclaration",
+    id: ident(node.name),
+    params: [],
+    body: {
+      type: "BlockStatement",
+      body: ctorBody
+    }
+  });
+  if (base) {
+    body.push({
+      type: "AssignmentExpression",
+      left: proto,
+      right: {
+        type: "CallExpression",
+        callee: makeVariableName('Object.create'),
+        arguments: [member(base, ident('prototype'))]
+      },
+      operator: "="
+    });
+  }
+  body = body.concat(transform(node.body, nctx));
+  body.push({
+    type: "ReturnStatement",
+    argument: ident(node.name)
+  });
+  return {
+    "type": "VariableDeclaration",
+    "declarations": [{
+      "type": "VariableDeclarator",
+      "id": ident(node.name),
+      "init": {
+        type: "CallExpression",
+        callee: {
+          type: "FunctionExpression",
+          params: [],
+          body: {
+            type: "BlockStatement",
+            body: ensureStatement(body)
+          }
+        },
+        arguments: []
+      }
+    }],
+    "kind": ctx.varType || 'var'
+  };
+}
+function tranformContinue(node, ctx) {
+  return {
+    type: "ContinueStatement"
+  };
+}
+function makeCop(left, op, right) {
+  var fxOps = {
+    "In_": "in",
+    "In": "in",
+    "NotIn": "in"
+  };
+  var opName = getOpName(op);
+  if (opName in fxOps) {
+    var call = {
+      type: "CallExpression",
+      callee: makeVariableName("__pythonRuntime.ops." + fxOps[opName]),
+      arguments: [left, right]
+    };
+    if (opName == "NotIn") {
+      return {
+        type: "UnaryExpression",
+        argument: call,
+        operator: "!"
+      };
+    } else {
+      return call;
+    }
+  }
+  var operators = {
+    "Eq": "===",
+    "NotEq": "!==",
+    "LtE": "<=",
+    "Lt": "<",
+    "GtE": ">=",
+    "Gt": ">",
+    "Is": "===",
+    "IsNot": "!=="
+  };
+  if (!(opName in operators)) abort("Unsuported Compare operator: " + opName);
+  return binOp(left, operators[opName], right);
+}
+function transformCompare(node, ctx) {
+  var left = transform(node.left, ctx);
+  var result;
+  for (var i = 0; i < node.comparators.length; ++i) {
+    var right = transform(node.comparators[i], ctx);
+    var cop = makeCop(left, node.ops[i], right);
+    if (result) {
+      result = logicOp(result, '&&', cop);
+    } else {
+      result = cop;
+    }
+    left = right;
+  }
+  return result;
+}
+function transformDel(node, ctx) {
+  var result = [];
+  for (var i = 0; i < node.targets.length; ++i) {
+    var st = node.targets[i];
+    var partial = transform(st, ctx);
+    result.push({
+      type: "AssignmentExpression",
+      operator: "=",
+      left: partial,
+      right: {
+        type: "UnaryExpression",
+        argument: literal(0),
+        operator: 'void',
+        prefix: true
+      }
+    });
+  }
+  return ensureStatement({
+    type: "SequenceExpression",
+    expressions: result
+  });
+}
+function transformDict(node, ctx) {
+  var args = [];
+  for (var i = 0; i < node.keys.length; ++i) {
+    args.push({
+      type: "ArrayExpression",
+      elements: [transform(node.keys[i], ctx), transform(node.values[i], ctx)]
+    });
+  }
+  return {
+    type: "NewExpression",
+    callee: makeVariableName("__pythonRuntime.objects.dict"),
+    arguments: args
+  };
+}
+function transformExpr(node, ctx) {
+  return {
+    type: "ExpressionStatement",
+    expression: transform(node.value, ctx)
+  };
+}
+function assignPossiblyWithDeclaration(target, value, ctx) {
+  var left = target._astname ? transform(target, ctx) : target;
+  var varible;
+  if (left.type === "Identifier") varible = left.name;
+  if (!varible || !ctx || !ctx.locals || ctx.locals[varible]) {
+    return {
+      type: "ExpressionStatement",
+      expression: {
+        type: "AssignmentExpression",
+        operator: "=",
+        left: left,
+        right: value
+      }
+    };
+  }
+  ctx.locals[varible] = true;
+  return {
+    type: "VariableDeclaration",
+    declarations: [{
+      type: "VariableDeclarator",
+      id: left,
+      init: value
+    }],
+    kind: ctx.varType || 'var'
+  };
+}
+function createTupleUnpackingAssign(target, value, ctx) {
+  if (target._astname === 'Tuple') {
+    var result = [];
+    var tn = createTempName("right");
+    result.push({
+      type: "VariableDeclaration",
+      kind: "var",
+      declarations: [{
+        type: "VariableDeclarator",
+        id: ident(tn),
+        init: value
+      }]
+    });
+    for (var i = 0; i < target.elts.length; ++i) {
+      result.push.apply(result, createTupleUnpackingAssign(target.elts[i], {
+        type: "MemberExpression",
+        object: ident(tn),
+        property: literal(i),
+        computed: true
+      }, ctx));
+    }
+    return result;
+  }
+  return [assignPossiblyWithDeclaration(target, value, ctx)];
+}
+function createForLoop(iident, tident, iter, target, body, ctx) {
+  body = createTupleUnpackingAssign(target, {
+    type: "MemberExpression",
+    object: tident,
+    property: iident,
+    computed: true
+  }, ctx).concat(body);
+  var riter = ternary({
+    type: "CallExpression",
+    callee: makeVariableName("Array.isArray"),
+    arguments: [iter]
+  }, iter, {
+    type: "CallExpression",
+    callee: makeVariableName("Object.keys"),
+    arguments: [iter]
+  });
+  return {
+    type: "ForStatement",
+    init: {
+      "type": "VariableDeclaration",
+      "declarations": [{
+        "type": "VariableDeclarator",
+        "id": iident,
+        "init": literal(0)
+      }, {
+        "type": "VariableDeclarator",
+        "id": tident,
+        "init": riter
+      }],
+      "kind": ctx.varType
+    },
+    test: binOp(iident, '<', {
+      type: "MemberExpression",
+      object: tident,
+      property: {
+        type: "Identifier",
+        name: "length"
+      }
+    }),
+    update: {
+      "type": "UpdateExpression",
+      "operator": "++",
+      "prefix": true,
+      "argument": iident
+    },
+    body: {
+      type: "BlockStatement",
+      body: body
+    }
+  };
+}
+function transformFor(node, ctx) {
+  var name = createTempName('idx');
+  var iident = ident(name);
+  var tname = createTempName('target');
+  var tident = {
+    type: "Identifier",
+    name: tname
+  };
+  var iter = transform(node.iter, ctx);
+  var body = ensureStatement(transform(node.body, ctx));
+  if (node.orelse && node.orelse.length > 0) abort("else: for-else statement unsupported.");
+  return createForLoop(iident, tident, iter, node.target, body, ctx);
+}
+function prepareFunctionBody(node, ctx) {
+  var args = node.args.args.slice(0);
+  if (ctx.inClass) {
+    //TODO: Make sure it's named self, maybe?
+    args.shift();
+  }
+  var hasAnyArguments = args.length > 0 || node.args.vararg || node.args.kwarg;
+  var nctx = {
+    locals: Object.create(null),
+    varType: ctx.varType
+  };
+  var body = ensureStatement(transform(node.body, nctx));
+  var premble = [];
+  if (ctx.inClass) {
+    premble.push({
+      "type": "VariableDeclaration",
+      "declarations": [{
+        "type": "VariableDeclarator",
+        "id": ident('self'),
+        "init": {
+          type: "ThisExpression"
+        }
+      }],
+      "kind": "var"
+    });
+  }
+  if (hasAnyArguments) {
+    var hasParams = createTempName('hasParams');
+    var param0 = createTempName('param0');
+    var realArgCount = createTempName('realArgCount');
+    var argLen = makeVariableName('arguments.length');
+    var argN = {
+      type: "MemberExpression",
+      object: ident('arguments'),
+      property: binOp(argLen, '-', literal(1)),
+      computed: true
+    };
+    var argNKeywords = {
+      type: "MemberExpression",
+      object: argN,
+      property: ident('keywords'),
+      computed: false
+    };
+    premble.push({
+      "type": "VariableDeclaration",
+      "declarations": [{
+        "type": "VariableDeclarator",
+        "id": ident(hasParams),
+        "init": logicOp(binOp(argLen, '>', literal(0)), '&&', logicOp(argN, '&&', argNKeywords))
+      }],
+      "kind": "var"
+    });
+    var main = [];
+    main.push({
+      "type": "VariableDeclaration",
+      "declarations": [{
+        "type": "VariableDeclarator",
+        "id": ident(param0),
+        "init": ternary(ident(hasParams), argNKeywords, {
+          type: "ObjectExpression",
+          properties: []
+        })
+      }, {
+        "type": "VariableDeclarator",
+        "id": ident(realArgCount),
+        "init": binOp(argLen, '-', ternary(ident(hasParams), literal(1), literal(0)))
+      }],
+      "kind": "var"
+    });
+    for (var i = 0; i < args.length; ++i) {
+      var a = node.args.args[i];
+      var didx = i - (node.args.args.length - node.args.defaults.length);
+      var def = didx >= 0 ? transform(node.args.defaults[didx], ctx) : ident('undefined');
+      main.push({
+        type: "IfStatement",
+        test: binOp(ident(realArgCount), '<', literal(i + 1)),
+        consequent: ensureStatement({
+          type: "AssignmentExpression",
+          operator: "=",
+          left: ident(a.id),
+          right: ternary(binOp(literal(a.id), 'in', ident(param0)), {
+            type: "MemberExpression",
+            object: ident(param0),
+            property: ident(a.id),
+            computed: false
+          }, def)
+        })
+      });
+    }
+    if (node.args.vararg) {
+      main.push({
+        "type": "VariableDeclaration",
+        "declarations": [{
+          "type": "VariableDeclarator",
+          "id": ident(node.args.vararg),
+          "init": {
+            type: "CallExpression",
+            callee: makeVariableName("Array.prototype.slice.call"),
+            arguments: [ident('arguments'), literal(node.args.args.length), hasAnyArguments ? ident(realArgCount) : undefined]
+          }
+        }],
+        "kind": "var"
+      });
+    }
+    if (node.args.kwarg) {
+      for (var i = 0; i < node.args.args.length; ++i) {
+        main.push(ensureStatement({
+          type: "UnaryExpression",
+          operator: "delete",
+          argument: {
+            type: "MemberExpression",
+            object: ident(param0),
+            property: ident(node.args.args[i].id),
+            computed: false
+          }
+        }));
+      }
+      main.push({
+        "type": "VariableDeclaration",
+        "declarations": [{
+          "type": "VariableDeclarator",
+          "id": ident(node.args.kwarg),
+          "init": ident(param0)
+        }],
+        "kind": "var"
+      });
+    }
+    premble = premble.concat(main); //TODO: If we dont have defauts, we can guard this with __hasParams
+  }
+
+  body = premble.concat(body);
+  var params = transform(args, ctx);
+  return {
+    premble: premble,
+    body: body,
+    params: params
+  };
+}
+function transformFunctionDef(node, ctx) {
+  var data = prepareFunctionBody(node, ctx);
+  if (ctx.writeTarget) {
+    return ensureStatement({
+      type: "AssignmentExpression",
+      left: {
+        type: "MemberExpression",
+        object: ctx.writeTarget,
+        property: ident(node.name)
+      },
+      right: {
+        type: "FunctionExpression",
+        name: ident(node.name),
+        params: data.params,
+        body: {
+          type: "BlockStatement",
+          body: data.body
+        }
+      },
+      operator: '='
+    });
+  } else {
+    return {
+      type: "FunctionDeclaration",
+      id: {
+        type: "Identifier",
+        name: node.name.v
+      },
+      params: data.params,
+      body: {
+        type: "BlockStatement",
+        body: data.body
+      }
+    };
+  }
+}
+function transformGlobal(node, ctx) {
+  for (var i = 0; i < node.names.length; ++i) {
+    ctx.locals[node.names[i].v] = true;
+  }
+  return [];
+}
+function transformIf(node, ctx) {
+  var body = ensureStatement(transform(node.body, ctx));
+  return {
+    type: "IfStatement",
+    test: transform(node.test, ctx),
+    consequent: {
+      type: "BlockStatement",
+      body: body
+    },
+    alternate: node.orelse && node.orelse.length > 0 ? {
+      type: "BlockStatement",
+      body: ensureStatement(transform(node.orelse, ctx))
+    } : undefined
+  };
+}
+function transformLambda(node, ctx) {
+  var data = prepareFunctionBody(node, ctx);
+
+  //TODO: This is pretty sketchy.
+  var last = data.body[data.body.length - 1];
+  data.body[data.body.length - 1] = {
+    type: "ReturnStatement",
+    argument: last.expression
+  };
+  return {
+    type: "FunctionExpression",
+    params: data.params,
+    body: {
+      type: "BlockStatement",
+      body: data.body
+    }
+  };
+}
+function transformList(node, ctx) {
+  var call = {
+    type: "CallExpression",
+    callee: makeVariableName("__pythonRuntime.objects.list"),
+    arguments: transform(node.elts, ctx)
+  };
+  return call;
+}
+function transformListComp(node, ctx) {
+  var body = [];
+  var aggrigator = createTempName('result');
+  body.push({
+    "type": "VariableDeclaration",
+    "declarations": [{
+      "type": "VariableDeclarator",
+      "id": ident(aggrigator),
+      "init": {
+        type: "NewExpression",
+        callee: makeVariableName('__pythonRuntime.objects.list'),
+        arguments: []
+      }
+    }],
+    "kind": "var"
+  });
+  var insideBody = [];
+  insideBody.push(ensureStatement({
+    type: "CallExpression",
+    callee: {
+      type: "MemberExpression",
+      object: ident(aggrigator),
+      property: ident('push'),
+      computed: false
+    },
+    arguments: [transform(node.elt, ctx)]
+  }));
+
+  //if ( node.generators.length !== 1 ) abort("Unsuported number of generators");
+  var gen = node.generators[0];
+  for (var g = node.generators.length - 1; g >= 0; --g) {
+    var idxName = createTempName('idx');
+    var listName = createTempName("list" + g);
+    var iterName = createTempName('iter');
+    var gen = node.generators[g];
+    for (var i = 0; i < gen.ifs.length; ++i) {
+      insideBody.unshift({
+        type: "IfStatement",
+        test: {
+          type: "UnaryExpression",
+          argument: transform(gen.ifs[i], ctx),
+          operator: "!"
+        },
+        consequent: {
+          type: "ContinueStatement"
+        }
+      });
+    }
+    insideBody = [{
+      type: "VariableDeclaration",
+      kind: "var",
+      declarations: [{
+        type: "VariableDeclarator",
+        id: ident(listName),
+        init: transform(gen.iter, ctx)
+      }]
+    }, createForLoop(ident(idxName), ident(iterName), ident(listName), gen.target, insideBody, ctx)];
+  }
+  body.push.apply(body, insideBody);
+  body.push({
+    type: "ReturnStatement",
+    argument: ident(aggrigator)
+  });
+  var expr = {
+    type: "FunctionExpression",
+    params: [],
+    body: {
+      type: "BlockStatement",
+      body: body
+    }
+  };
+  return {
+    type: "CallExpression",
+    callee: expr,
+    arguments: []
+  };
+}
+function transformModule(node, ctx) {
+  return {
+    type: "Program",
+    body: ensureStatement(transform(node.body, ctx))
+  };
+}
+function transformName(node, ctx) {
+  if (node.id.v === 'True') return {
+    type: "Literal",
+    value: true,
+    raw: "true"
+  };
+  if (node.id.v === 'False') return {
+    type: "Literal",
+    value: false,
+    raw: "false"
+  };
+  if (node.id.v === 'None') return {
+    type: "Literal",
+    value: null,
+    raw: "null"
+  };
+  if (node.id.v === 'random') return makeVariableName('rand');
+  return ident(node.id);
+}
+function transformNum(node, ctx) {
+  return literal(node.n);
+}
+function transformPrint(node, ctx) {
+  return {
+    type: "CallExpression",
+    callee: makeVariableName("debug"),
+    arguments: transform(node.values, ctx)
+  };
+}
+function transformReturn(node, ctx) {
+  return {
+    type: "ReturnStatement",
+    argument: node.value ? transform(node.value, ctx) : undefined
+  };
+}
+function transformStr(node, ctx) {
+  return literal(node.s.valueOf());
+}
+function transformTuple(node, ctx) {
+  var call = {
+    type: "CallExpression",
+    callee: makeVariableName("__pythonRuntime.objects.tuple"),
+    arguments: transform(node.elts, ctx)
+  };
+  return call;
+}
+function transformSubscript(node, ctx) {
+  //TODO: Do silly pythonic list offset logic
+  var val = transform(node.value, ctx);
+  if (node.slice.value) {
+    var lu = transform(node.slice.value, ctx);
+    lu = {
+      type: "CallExpression",
+      callee: makeVariableName("__pythonRuntime.ops.subscriptIndex"),
+      arguments: [val, lu]
+    };
+    return {
+      type: "MemberExpression",
+      computed: true,
+      object: val,
+      property: lu
+    };
+  }
+  return {
+    type: "CallExpression",
+    callee: makeVariableName('__pythonRuntime.internal.slice'),
+    arguments: [val, node.slice.lower ? transform(node.slice.lower, ctx) : ident('undefined'), node.slice.upper ? transform(node.slice.upper, ctx) : ident('undefined'), node.slice.step ? transform(node.slice.step, ctx) : ident('undefined')]
+  };
+}
+function transformPass(node, ctx) {
+  return {
+    type: "EmptyStatement"
+  };
+}
+function transformUnaryOp(node, ctx) {
+  var argument = transform(node.operand, ctx);
+  var fxOps = {
+    "Add": "add",
+    "Mult": "multiply"
+  };
+  var opName = getOpName(node.op);
+  if (opName in fxOps) {
+    var call = {
+      type: "CallExpression",
+      callee: makeVariableName("__pythonRuntime.ops." + fxOps[opName]),
+      arguments: [argument]
+    };
+    return call;
+  }
+  var operators = {
+    "Not": "!",
+    "USub": "-",
+    "Invert": "~"
+  };
+  if (!(opName in operators)) abort("Unknown unary operator: " + opName);
+  return {
+    type: "UnaryExpression",
+    argument: argument,
+    operator: operators[opName]
+  };
+}
+function transformWhile(node, ctx) {
+  if (node.orelse && node.orelse.length > 0) abort("else: statement for while unsupported.");
+  return {
+    type: "WhileStatement",
+    test: transform(node.test, ctx),
+    body: {
+      type: "BlockStatement",
+      body: ensureStatement(transform(node.body, ctx))
+    }
+  };
+}
+
+// module.exports = transform;
+
+'use strict';
+
+/* ---- /Users/rob/skulpty/lib/preamble.js ---- */
+
+var goog = {
+  global: global
+};
+var COMPILED = false;
+goog.exportSymbol = function () {};
+goog.require = function () {};
+goog.inherits = function (childCtor, parentCtor) {
+  if (!parentCtor) throw new Error("Cant inherit from undefined?");
+  /** @constructor */
+  function tempCtor() {}
+  ;
+  tempCtor.prototype = parentCtor.prototype;
+  childCtor.superClass_ = parentCtor.prototype;
+  childCtor.prototype = new tempCtor();
+  /** @override */
+  childCtor.prototype.constructor = childCtor;
+};
+goog.asserts = {
+  assert: function (what, why) {
+    if (!what) throw new Error("AssertionFailed:" + why);
+  }
+};
+var Sk = Sk || {};
+Sk.builtin = Sk.builtin || {};
+Sk.builtin.bool = Boolean;
+Sk.builtin.int_ = function Int(x) {
+  this.v = x;
+};
+Sk.builtin.int_.prototype.threshold$ = Infinity;
+Sk.builtin.int_.prototype.valueOf = function () {
+  return this.v.valueOf();
+};
+Sk.builtin.tuple = function (x) {
+  this.v = Array.prototype.slice.call(x, 0);
+};
+Sk.builtin.tuple.prototype.sq$length = function () {
+  return this.length;
+};
+Sk.builtin.float_ = Number;
+Sk.builtin.long = Number;
+Sk.builtin.func = function (fx) {
+  return fx;
+};
+
+/* ---- /Users/rob/skulpty/lib/../node_modules/skulpt/src/type.js ---- */
+
+if (Sk.builtin === undefined) {
+  Sk.builtin = {};
+}
+
+/**
+ * Maps Python dunder names to the Skulpt Javascript function names that
+ * implement them.
+ *
+ * Note: __add__, __mul__, and __rmul__ can be used for either numeric or
+ * sequence types. Here, they default to the numeric versions (i.e. nb$add,
+ * nb$multiply, and nb$reflected_multiply). This works because Sk.abstr.binary_op_
+ * checks for the numeric shortcuts and not the sequence shortcuts when computing
+ * a binary operation.
+ *
+ * Because many of these functions are used in contexts in which Skulpt does not
+ * [yet] handle suspensions, the assumption is that they must not suspend. However,
+ * some of these built-in functions are acquiring 'canSuspend' arguments to signal
+ * where this is not the case. These need to be spliced out of the argument list before
+ * it is passed to python. Array values in this map contain [dunderName, argumentIdx],
+ * where argumentIdx specifies the index of the 'canSuspend' boolean argument.
+ *
+ * @type {Object}
+ */
+Sk.dunderToSkulpt = {
+  "__eq__": "ob$eq",
+  "__ne__": "ob$ne",
+  "__lt__": "ob$lt",
+  "__le__": "ob$le",
+  "__gt__": "ob$gt",
+  "__ge__": "ob$ge",
+  "__hash__": "tp$hash",
+  "__abs__": "nb$abs",
+  "__neg__": "nb$negative",
+  "__pos__": "nb$positive",
+  "__int__": "nb$int_",
+  "__long__": "nb$lng",
+  "__float__": "nb$float_",
+  "__add__": "nb$add",
+  "__radd__": "nb$reflected_add",
+  "__sub__": "nb$subtract",
+  "__rsub__": "nb$reflected_subtract",
+  "__mul__": "nb$multiply",
+  "__rmul__": "nb$reflected_multiply",
+  "__div__": "nb$divide",
+  "__rdiv__": "nb$reflected_divide",
+  "__floordiv__": "nb$floor_divide",
+  "__rfloordiv__": "nb$reflected_floor_divide",
+  "__mod__": "nb$remainder",
+  "__rmod__": "nb$reflected_remainder",
+  "__divmod__": "nb$divmod",
+  "__rdivmod__": "nb$reflected_divmod",
+  "__pow__": "nb$power",
+  "__rpow__": "nb$reflected_power",
+  "__contains__": "sq$contains",
+  "__len__": ["sq$length", 1],
+  "__get__": ["tp$descr_get", 3],
+  "__set__": ["tp$descr_set", 3]
+};
+
+/**
+ *
+ * @constructor
+ *
+ * @param {*} name name or object to get type of, if only one arg
+ *
+ * @param {Sk.builtin.tuple=} bases
+ *
+ * @param {Object=} dict
+ *
+ *
+ * This type represents the type of `type'. *Calling* an instance of
+ * this builtin type named "type" creates class objects. The resulting
+ * class objects will have various tp$xyz attributes on them that allow
+ * for the various operations on that object.
+ *
+ * calling the type or calling an instance of the type? or both?
+ */
+Sk.builtin.type = function (name, bases, dict) {
+  var mro;
+  var obj;
+  var klass;
+  var v;
+  if (bases === undefined && dict === undefined) {
+    // 1 arg version of type()
+    // the argument is an object, not a name and returns a type object
+    obj = name;
+    return obj.ob$type;
+  } else {
+    // argument dict must be of type dict
+    if (dict.tp$name !== "dict") {
+      throw new Sk.builtin.TypeError("type() argument 3 must be dict, not " + Sk.abstr.typeName(dict));
+    }
+
+    // checks if name must be string
+    if (!Sk.builtin.checkString(name)) {
+      throw new Sk.builtin.TypeError("type() argument 1 must be str, not " + Sk.abstr.typeName(name));
+    }
+
+    // argument bases must be of type tuple
+    if (bases.tp$name !== "tuple") {
+      throw new Sk.builtin.TypeError("type() argument 2 must be tuple, not " + Sk.abstr.typeName(bases));
+    }
+
+    // type building version of type
+
+    // dict is the result of running the classes code object
+    // (basically the dict of functions). those become the prototype
+    // object of the class).
+
+    /**
+    * The constructor is a stub, that gets called from object.__new__
+    * @constructor
+    */
+    klass = function (args, kws) {
+      var args_copy;
+
+      // Call up through the chain in case there's a built-in object
+      // whose constructor we need to initialise
+      if (klass.prototype.tp$base !== undefined) {
+        if (klass.prototype.tp$base.sk$klass) {
+          klass.prototype.tp$base.call(this, args, kws);
+        } else {
+          // Call super constructor if subclass of a builtin
+          args_copy = args.slice();
+          args_copy.unshift(klass, this);
+          Sk.abstr.superConstructor.apply(undefined, args_copy);
+        }
+      }
+      this["$d"] = new Sk.builtin.dict([]);
+      this["$d"].mp$ass_subscript(new Sk.builtin.str("__dict__"), this["$d"]);
+    };
+    var _name = Sk.ffi.remapToJs(name); // unwrap name string to js for latter use
+
+    var inheritsBuiltin = false;
+
+    // Invoking the class object calls __new__() to generate a new instance,
+    // then __init__() to initialise it
+    klass.tp$call = function (args, kws) {
+      var newf = Sk.builtin.type.typeLookup(klass, "__new__"),
+        newargs;
+      var self;
+      args = args || [];
+      kws = kws || [];
+      if (newf === undefined || newf === Sk.builtin.object.prototype["__new__"]) {
+        // No override -> just call the constructor
+        self = new klass(args, kws);
+        newf = undefined;
+      } else {
+        newargs = args.slice();
+        newargs.unshift(klass);
+        self = Sk.misceval.applyOrSuspend(newf, undefined, undefined, kws, newargs);
+      }
+      return Sk.misceval.chain(self, function (s) {
+        var init = Sk.builtin.type.typeLookup(s.ob$type, "__init__");
+        self = s; // in case __new__ suspended
+
+        if (init !== undefined) {
+          args.unshift(self);
+          return Sk.misceval.applyOrSuspend(init, undefined, undefined, kws, args);
+        } else if (newf === undefined && (args.length !== 0 || kws.length !== 0) && !inheritsBuiltin) {
+          // We complain about spurious constructor arguments if neither __new__
+          // nor __init__ were overridden
+          throw new Sk.builtin.TypeError("__init__() got unexpected argument(s)");
+        }
+      }, function (r) {
+        if (r !== Sk.builtin.none.none$ && r !== undefined) {
+          throw new Sk.builtin.TypeError("__init__() should return None, not " + Sk.abstr.typeName(r));
+        } else {
+          return self;
+        }
+      });
+    };
+    if (bases.v.length === 0 && Sk.python3) {
+      // new style class, inherits from object by default
+      Sk.abstr.setUpInheritance(_name, klass, Sk.builtin.object);
+    }
+    var parent,
+      it,
+      firstAncestor,
+      builtin_bases = [];
+    // Set up inheritance from any builtins
+    for (it = bases.tp$iter(), parent = it.tp$iternext(); parent !== undefined; parent = it.tp$iternext()) {
+      if (firstAncestor === undefined) {
+        firstAncestor = parent;
+      }
+      while (parent.sk$klass && parent.prototype.tp$base) {
+        parent = parent.prototype.tp$base;
+      }
+      if (!parent.sk$klass && builtin_bases.indexOf(parent) < 0) {
+        builtin_bases.push(parent);
+        inheritsBuiltin = true;
+      }
+    }
+    if (builtin_bases.length > 1) {
+      throw new Sk.builtin.TypeError("Multiple inheritance with more than one builtin type is unsupported");
+    }
+
+    // Javascript does not support multiple inheritance, so only the first
+    // base (if any) will directly inherit in Javascript
+    if (firstAncestor !== undefined) {
+      goog.inherits(klass, firstAncestor);
+      if (firstAncestor.prototype instanceof Sk.builtin.object || firstAncestor === Sk.builtin.object) {
+        klass.prototype.tp$base = firstAncestor;
+      }
+    }
+    klass.prototype.tp$name = _name;
+    klass.prototype.ob$type = Sk.builtin.type.makeIntoTypeObj(_name, klass);
+
+    // set __module__ if not present (required by direct type(name, bases, dict) calls)
+    var module_lk = new Sk.builtin.str("__module__");
+    if (dict.mp$lookup(module_lk) === undefined) {
+      dict.mp$ass_subscript(module_lk, Sk.globals["__name__"]);
+    }
+
+    // copy properties into our klass object
+    // uses python iter methods
+    var k;
+    for (it = dict.tp$iter(), k = it.tp$iternext(); k !== undefined; k = it.tp$iternext()) {
+      v = dict.mp$subscript(k);
+      if (v === undefined) {
+        v = null;
+      }
+      klass.prototype[k.v] = v;
+      klass[k.v] = v;
+    }
+    klass["__class__"] = klass;
+    klass["__name__"] = name;
+    klass.sk$klass = true;
+    klass.prototype["$r"] = function () {
+      var cname;
+      var mod;
+      var reprf = this.tp$getattr("__repr__");
+      if (reprf !== undefined && reprf.im_func !== Sk.builtin.object.prototype["__repr__"]) {
+        return Sk.misceval.apply(reprf, undefined, undefined, undefined, []);
+      }
+      if (klass.prototype.tp$base !== undefined && klass.prototype.tp$base !== Sk.builtin.object && klass.prototype.tp$base.prototype["$r"] !== undefined) {
+        // If subclass of a builtin which is not object, use that class' repr
+        return klass.prototype.tp$base.prototype["$r"].call(this);
+      } else {
+        // Else, use default repr for a user-defined class instance
+        mod = dict.mp$subscript(module_lk); // lookup __module__
+        cname = "";
+        if (mod) {
+          cname = mod.v + ".";
+        }
+        return new Sk.builtin.str("<" + cname + _name + " object>");
+      }
+    };
+    klass.prototype.tp$setattr = function (name, data, canSuspend) {
+      var r,
+        /** @type {(Object|undefined)} */setf = Sk.builtin.object.prototype.GenericGetAttr.call(this, "__setattr__");
+      if (setf !== undefined) {
+        r = Sk.misceval.callsimOrSuspend( /** @type {Object} */setf, new Sk.builtin.str(name), data);
+        return canSuspend ? r : Sk.misceval.retryOptionalSuspensionOrThrow(r);
+      }
+      return Sk.builtin.object.prototype.GenericSetAttr.call(this, name, data);
+    };
+    klass.prototype.tp$getattr = function (name, canSuspend) {
+      var r, /** @type {(Object|undefined)} */getf;
+      // Convert AttributeErrors back into 'undefined' returns to match the tp$getattr
+      // convention
+      var callCatchUndefined = function () {
+        return Sk.misceval.tryCatch(function () {
+          return Sk.misceval.callsimOrSuspend( /** @type {Object} */getf, new Sk.builtin.str(name));
+        }, function (e) {
+          if (e instanceof Sk.builtin.AttributeError) {
+            return undefined;
+          } else {
+            throw e;
+          }
+        });
+      };
+      getf = Sk.builtin.object.prototype.GenericGetAttr.call(this, "__getattribute__");
+      if (getf !== undefined) {
+        r = callCatchUndefined();
+      } else {
+        r = Sk.builtin.object.prototype.GenericGetAttr.call(this, name);
+        if (r === undefined) {
+          getf = Sk.builtin.object.prototype.GenericGetAttr.call(this, "__getattr__");
+          if (getf !== undefined) {
+            r = callCatchUndefined();
+          }
+        }
+      }
+      return canSuspend ? r : Sk.misceval.retryOptionalSuspensionOrThrow(r);
+    };
+    klass.prototype.tp$str = function () {
+      var strf = this.tp$getattr("__str__");
+      if (strf !== undefined && strf.im_func !== Sk.builtin.object.prototype["__str__"]) {
+        return Sk.misceval.apply(strf, undefined, undefined, undefined, []);
+      }
+      if (klass.prototype.tp$base !== undefined && klass.prototype.tp$base !== Sk.builtin.object && klass.prototype.tp$base.prototype.tp$str !== undefined) {
+        // If subclass of a builtin which is not object, use that class' repr
+        return klass.prototype.tp$base.prototype.tp$str.call(this);
+      }
+      return this["$r"]();
+    };
+    klass.prototype.tp$length = function (canSuspend) {
+      var r = Sk.misceval.chain(Sk.abstr.gattr(this, "__len__", canSuspend), function (lenf) {
+        return Sk.misceval.applyOrSuspend(lenf, undefined, undefined, undefined, []);
+      });
+      return canSuspend ? r : Sk.misceval.retryOptionalSuspensionOrThrow(r);
+    };
+    klass.prototype.tp$call = function (args, kw) {
+      return Sk.misceval.chain(this.tp$getattr("__call__", true), function (callf) {
+        if (callf === undefined) {
+          throw new Sk.builtin.TypeError("'" + Sk.abstr.typeName(this) + "' object is not callable");
+        }
+        return Sk.misceval.applyOrSuspend(callf, undefined, undefined, kw, args);
+      });
+    };
+    klass.prototype.tp$iter = function () {
+      var iterf = this.tp$getattr("__iter__");
+      if (iterf === undefined) {
+        throw new Sk.builtin.TypeError("'" + Sk.abstr.typeName(this) + "' object is not iterable");
+      }
+      return Sk.misceval.callsim(iterf);
+    };
+    klass.prototype.tp$iternext = function (canSuspend) {
+      var self = this;
+      var r = Sk.misceval.chain(self.tp$getattr("next", canSuspend), function ( /** {Object} */iternextf) {
+        if (iternextf === undefined) {
+          throw new Sk.builtin.TypeError("'" + Sk.abstr.typeName(self) + "' object is not iterable");
+        }
+        return Sk.misceval.tryCatch(function () {
+          return Sk.misceval.callsimOrSuspend(iternextf);
+        }, function (e) {
+          if (e instanceof Sk.builtin.StopIteration) {
+            return undefined;
+          } else {
+            throw e;
+          }
+        });
+      });
+      return canSuspend ? r : Sk.misceval.retryOptionalSuspensionOrThrow(r);
+    };
+    klass.prototype.tp$getitem = function (key, canSuspend) {
+      var getf = this.tp$getattr("__getitem__", canSuspend),
+        r;
+      if (getf !== undefined) {
+        r = Sk.misceval.applyOrSuspend(getf, undefined, undefined, undefined, [key]);
+        return canSuspend ? r : Sk.misceval.retryOptionalSuspensionOrThrow(r);
+      }
+      throw new Sk.builtin.TypeError("'" + Sk.abstr.typeName(this) + "' object does not support indexing");
+    };
+    klass.prototype.tp$setitem = function (key, value, canSuspend) {
+      var setf = this.tp$getattr("__setitem__", canSuspend),
+        r;
+      if (setf !== undefined) {
+        r = Sk.misceval.applyOrSuspend(setf, undefined, undefined, undefined, [key, value]);
+        return canSuspend ? r : Sk.misceval.retryOptionalSuspensionOrThrow(r);
+      }
+      throw new Sk.builtin.TypeError("'" + Sk.abstr.typeName(this) + "' object does not support item assignment");
+    };
+    if (bases) {
+      //print("building mro for", name);
+      //for (var i = 0; i < bases.length; ++i)
+      //print("base[" + i + "]=" + bases[i].tp$name);
+      klass["$d"] = new Sk.builtin.dict([]);
+      klass["$d"].mp$ass_subscript(Sk.builtin.type.basesStr_, bases);
+      mro = Sk.builtin.type.buildMRO(klass);
+      klass["$d"].mp$ass_subscript(Sk.builtin.type.mroStr_, mro);
+      klass.tp$mro = mro;
+      //print("mro result", Sk.builtin.repr(mro).v);
+    }
+
+    // fix for class attributes
+    klass.tp$setattr = Sk.builtin.type.prototype.tp$setattr;
+    var shortcutDunder = function (skulpt_name, magic_name, magic_func, canSuspendIdx) {
+      klass.prototype[skulpt_name] = function () {
+        var args = Array.prototype.slice.call(arguments),
+          canSuspend;
+        args.unshift(magic_func, this);
+        if (canSuspendIdx !== null) {
+          canSuspend = args[canSuspendIdx + 1];
+          args.splice(canSuspendIdx + 1, 1);
+          if (canSuspend) {
+            return Sk.misceval.callsimOrSuspend.apply(undefined, args);
+          }
+        }
+        return Sk.misceval.callsim.apply(undefined, args);
+      };
+    };
+
+    // Register skulpt shortcuts to magic methods defined by this class.
+    // Dynamically deflined methods (eg those returned by __getattr__())
+    // cannot be used by these magic functions; this is consistent with
+    // how CPython handles "new-style" classes:
+    // https://docs.python.org/2/reference/datamodel.html#special-method-lookup-for-old-style-classes
+    var dunder, skulpt_name, canSuspendIdx;
+    for (dunder in Sk.dunderToSkulpt) {
+      skulpt_name = Sk.dunderToSkulpt[dunder];
+      if (typeof skulpt_name === "string") {
+        canSuspendIdx = null;
+      } else {
+        canSuspendIdx = skulpt_name[1];
+        skulpt_name = skulpt_name[0];
+      }
+      if (klass[dunder]) {
+        // scope workaround
+        shortcutDunder(skulpt_name, dunder, klass[dunder], canSuspendIdx);
+      }
+    }
+    return klass;
+  }
+};
+
+/**
+ *
+ */
+Sk.builtin.type.makeTypeObj = function (name, newedInstanceOfType) {
+  Sk.builtin.type.makeIntoTypeObj(name, newedInstanceOfType);
+  return newedInstanceOfType;
+};
+Sk.builtin.type.makeIntoTypeObj = function (name, t) {
+  goog.asserts.assert(name !== undefined);
+  goog.asserts.assert(t !== undefined);
+  t.ob$type = Sk.builtin.type;
+  t.tp$name = name;
+  t["$r"] = function () {
+    var ctype;
+    var mod = t.__module__;
+    var cname = "";
+    if (mod) {
+      cname = mod.v + ".";
+    }
+    ctype = "class";
+    if (!mod && !t.sk$klass && !Sk.python3) {
+      ctype = "type";
+    }
+    return new Sk.builtin.str("<" + ctype + " '" + cname + t.tp$name + "'>");
+  };
+  t.tp$str = undefined;
+  t.tp$getattr = Sk.builtin.type.prototype.tp$getattr;
+  t.tp$setattr = Sk.builtin.object.prototype.GenericSetAttr;
+  t.tp$richcompare = Sk.builtin.type.prototype.tp$richcompare;
+  t.sk$type = true;
+  return t;
+};
+Sk.builtin.type.ob$type = Sk.builtin.type;
+Sk.builtin.type.tp$name = "type";
+Sk.builtin.type["$r"] = function () {
+  if (Sk.python3) {
+    return new Sk.builtin.str("<class 'type'>");
+  } else {
+    return new Sk.builtin.str("<type 'type'>");
+  }
+};
+
+//Sk.builtin.type.prototype.tp$descr_get = function() { print("in type descr_get"); };
+
+//Sk.builtin.type.prototype.tp$name = "type";
+
+// basically the same as GenericGetAttr except looks in the proto instead
+Sk.builtin.type.prototype.tp$getattr = function (name, canSuspend) {
+  var res;
+  var tp = this;
+  var descr;
+  var f;
+  if (this["$d"]) {
+    res = this["$d"].mp$lookup(new Sk.builtin.str(name));
+    if (res !== undefined) {
+      return res;
+    }
+  }
+  descr = Sk.builtin.type.typeLookup(tp, name);
+
+  //print("type.tpgetattr descr", descr, descr.tp$name, descr.func_code, name);
+  if (descr !== undefined && descr !== null && descr.ob$type !== undefined) {
+    f = descr.tp$descr_get;
+    // todo;if (f && descr.tp$descr_set) // is a data descriptor if it has a set
+    // return f.call(descr, this, this.ob$type);
+  }
+
+  if (f) {
+    // non-data descriptor
+    return f.call(descr, Sk.builtin.none.none$, tp, canSuspend);
+  }
+  if (descr !== undefined) {
+    return descr;
+  }
+  return undefined;
+};
+Sk.builtin.type.prototype.tp$setattr = function (name, value) {
+  // class attributes are direct properties of the object
+  this[name] = value;
+};
+Sk.builtin.type.typeLookup = function (type, name) {
+  var mro = type.tp$mro;
+  var pyname = new Sk.builtin.str(name);
+  var base;
+  var res;
+  var i;
+
+  // todo; probably should fix this, used for builtin types to get stuff
+  // from prototype
+  if (!mro) {
+    if (type.prototype) {
+      return type.prototype[name];
+    }
+    return undefined;
+  }
+  for (i = 0; i < mro.v.length; ++i) {
+    base = mro.v[i];
+    if (base.hasOwnProperty(name)) {
+      return base[name];
+    }
+    res = base["$d"].mp$lookup(pyname);
+    if (res !== undefined) {
+      return res;
+    }
+    if (base.prototype && base.prototype[name] !== undefined) {
+      return base.prototype[name];
+    }
+  }
+  return undefined;
+};
+Sk.builtin.type.mroMerge_ = function (seqs) {
+  /*
+   var tmp = [];
+   for (var i = 0; i < seqs.length; ++i)
+   {
+   tmp.push(new Sk.builtin.list(seqs[i]));
+   }
+   print(Sk.builtin.repr(new Sk.builtin.list(tmp)).v);
+   */
+  var seq;
+  var i;
+  var next;
+  var k;
+  var sseq;
+  var j;
+  var cand;
+  var cands;
+  var res = [];
+  for (;;) {
+    for (i = 0; i < seqs.length; ++i) {
+      seq = seqs[i];
+      if (seq.length !== 0) {
+        break;
+      }
+    }
+    if (i === seqs.length) {
+      // all empty
+      return res;
+    }
+    cands = [];
+    for (i = 0; i < seqs.length; ++i) {
+      seq = seqs[i];
+      //print("XXX", Sk.builtin.repr(new Sk.builtin.list(seq)).v);
+      if (seq.length !== 0) {
+        cand = seq[0];
+        //print("CAND", Sk.builtin.repr(cand).v);
+        OUTER: for (j = 0; j < seqs.length; ++j) {
+          sseq = seqs[j];
+          for (k = 1; k < sseq.length; ++k) {
+            if (sseq[k] === cand) {
+              break OUTER;
+            }
+          }
+        }
+
+        // cand is not in any sequences' tail -> constraint-free
+        if (j === seqs.length) {
+          cands.push(cand);
+        }
+      }
+    }
+    if (cands.length === 0) {
+      throw new Sk.builtin.TypeError("Inconsistent precedences in type hierarchy");
+    }
+    next = cands[0];
+    // append next to result and remove from sequences
+    res.push(next);
+    for (i = 0; i < seqs.length; ++i) {
+      seq = seqs[i];
+      if (seq.length > 0 && seq[0] === next) {
+        seq.splice(0, 1);
+      }
+    }
+  }
+};
+Sk.builtin.type.buildMRO_ = function (klass) {
+  // MERGE(klass + mro(bases) + bases)
+  var i;
+  var bases;
+  var all = [[klass]];
+
+  //Sk.debugout("buildMRO for", klass.tp$name);
+
+  var kbases = klass["$d"].mp$subscript(Sk.builtin.type.basesStr_);
+  for (i = 0; i < kbases.v.length; ++i) {
+    all.push(Sk.builtin.type.buildMRO_(kbases.v[i]));
+  }
+  bases = [];
+  for (i = 0; i < kbases.v.length; ++i) {
+    bases.push(kbases.v[i]);
+  }
+  all.push(bases);
+  return Sk.builtin.type.mroMerge_(all);
+};
+
+/*
+ * C3 MRO (aka CPL) linearization. Figures out which order to search through
+ * base classes to determine what should override what. C3 does the "right
+ * thing", and it's what Python has used since 2.3.
+ *
+ * Kind of complicated to explain, but not really that complicated in
+ * implementation. Explanations:
+ *
+ * http://people.csail.mit.edu/jrb/goo/manual.43/goomanual_55.html
+ * http://www.python.org/download/releases/2.3/mro/
+ * http://192.220.96.201/dylan/linearization-oopsla96.html
+ *
+ * This implementation is based on a post by Samuele Pedroni on python-dev
+ * (http://mail.python.org/pipermail/python-dev/2002-October/029176.html) when
+ * discussing its addition to Python.
+ */
+Sk.builtin.type.buildMRO = function (klass) {
+  return new Sk.builtin.tuple(Sk.builtin.type.buildMRO_(klass));
+};
+Sk.builtin.type.prototype.tp$richcompare = function (other, op) {
+  var r2;
+  var r1;
+  if (other.ob$type != Sk.builtin.type) {
+    return undefined;
+  }
+  if (!this["$r"] || !other["$r"]) {
+    return undefined;
+  }
+  r1 = new Sk.builtin.str(this["$r"]().v.slice(1, 6));
+  r2 = new Sk.builtin.str(other["$r"]().v.slice(1, 6));
+  if (this["$r"]().v.slice(1, 6) !== "class") {
+    r1 = this["$r"]();
+    r2 = other["$r"]();
+  }
+  return r1.tp$richcompare(r2, op);
+};
+
+/* ---- /Users/rob/skulpty/lib/../node_modules/skulpt/src/abstract.js ---- */
+
+/**
+ * @namespace Sk.abstr
+ *
+ */
+Sk.abstr = {};
+
+//
+// Number
+//
+
+Sk.abstr.typeName = function (v) {
+  var vtypename;
+  if (v.tp$name !== undefined) {
+    vtypename = v.tp$name;
+  } else {
+    vtypename = "<invalid type>";
+  }
+  return vtypename;
+};
+Sk.abstr.binop_type_error = function (v, w, name) {
+  var vtypename = Sk.abstr.typeName(v),
+    wtypename = Sk.abstr.typeName(w);
+  throw new Sk.builtin.TypeError("unsupported operand type(s) for " + name + ": '" + vtypename + "' and '" + wtypename + "'");
+};
+Sk.abstr.unop_type_error = function (v, name) {
+  var vtypename = Sk.abstr.typeName(v),
+    uop = {
+      "UAdd": "+",
+      "USub": "-",
+      "Invert": "~"
+    }[name];
+  throw new Sk.builtin.TypeError("bad operand type for unary " + uop + ": '" + vtypename + "'");
+};
+
+/**
+ * lookup and return the LHS object slot function method.  This coudl be either a builtin slot function or a dunder method defined by the user.
+ * @param obj
+ * @param name
+ * @returns {Object|null|undefined}
+ * @private
+ */
+Sk.abstr.boNameToSlotFuncLhs_ = function (obj, name) {
+  if (obj === null) {
+    return undefined;
+  }
+  switch (name) {
+    case "Add":
+      return obj.nb$add ? obj.nb$add : obj["__add__"];
+    case "Sub":
+      return obj.nb$subtract ? obj.nb$subtract : obj["__sub__"];
+    case "Mult":
+      return obj.nb$multiply ? obj.nb$multiply : obj["__mul__"];
+    case "Div":
+      return obj.nb$divide ? obj.nb$divide : obj["__div__"];
+    case "FloorDiv":
+      return obj.nb$floor_divide ? obj.nb$floor_divide : obj["__floordiv__"];
+    case "Mod":
+      return obj.nb$remainder ? obj.nb$remainder : obj["__mod__"];
+    case "DivMod":
+      return obj.nb$divmod ? obj.nb$divmod : obj["__divmod__"];
+    case "Pow":
+      return obj.nb$power ? obj.nb$power : obj["__pow__"];
+    case "LShift":
+      return obj.nb$lshift ? obj.nb$lshift : obj["__lshift__"];
+    case "RShift":
+      return obj.nb$rshift ? obj.nb$rshift : obj["__rshift__"];
+    case "BitAnd":
+      return obj.nb$and ? obj.nb$and : obj["__and__"];
+    case "BitXor":
+      return obj.nb$xor ? obj.nb$xor : obj["__xor__"];
+    case "BitOr":
+      return obj.nb$or ? obj.nb$or : obj["__or__"];
+  }
+};
+Sk.abstr.boNameToSlotFuncRhs_ = function (obj, name) {
+  if (obj === null) {
+    return undefined;
+  }
+  switch (name) {
+    case "Add":
+      return obj.nb$reflected_add ? obj.nb$reflected_add : obj["__radd__"];
+    case "Sub":
+      return obj.nb$reflected_subtract ? obj.nb$reflected_subtract : obj["__rsub__"];
+    case "Mult":
+      return obj.nb$reflected_multiply ? obj.nb$reflected_multiply : obj["__rmul__"];
+    case "Div":
+      return obj.nb$reflected_divide ? obj.nb$reflected_divide : obj["__rdiv__"];
+    case "FloorDiv":
+      return obj.nb$reflected_floor_divide ? obj.nb$reflected_floor_divide : obj["__rfloordiv__"];
+    case "Mod":
+      return obj.nb$reflected_remainder ? obj.nb$reflected_remainder : obj["__rmod__"];
+    case "DivMod":
+      return obj.nb$reflected_divmod ? obj.nb$reflected_divmod : obj["__rdivmod__"];
+    case "Pow":
+      return obj.nb$reflected_power ? obj.nb$reflected_power : obj["__rpow__"];
+    case "LShift":
+      return obj.nb$reflected_lshift ? obj.nb$reflected_lshift : obj["__rlshift__"];
+    case "RShift":
+      return obj.nb$reflected_rshift ? obj.nb$reflected_rshift : obj["__rrshift__"];
+    case "BitAnd":
+      return obj.nb$reflected_and ? obj.nb$reflected_and : obj["__rand__"];
+    case "BitXor":
+      return obj.nb$reflected_xor ? obj.nb$reflected_xor : obj["__rxor__"];
+    case "BitOr":
+      return obj.nb$reflected_or ? obj.nb$reflected_or : obj["__ror__"];
+  }
+};
+Sk.abstr.iboNameToSlotFunc_ = function (obj, name) {
+  switch (name) {
+    case "Add":
+      return obj.nb$inplace_add ? obj.nb$inplace_add : obj["__iadd__"];
+    case "Sub":
+      return obj.nb$inplace_subtract ? obj.nb$inplace_subtract : obj["__isub__"];
+    case "Mult":
+      return obj.nb$inplace_multiply ? obj.nb$inplace_multiply : obj["__imul__"];
+    case "Div":
+      return obj.nb$inplace_divide ? obj.nb$inplace_divide : obj["__idiv__"];
+    case "FloorDiv":
+      return obj.nb$inplace_floor_divide ? obj.nb$inplace_floor_divide : obj["__ifloordiv__"];
+    case "Mod":
+      return obj.nb$inplace_remainder;
+    case "Pow":
+      return obj.nb$inplace_power;
+    case "LShift":
+      return obj.nb$inplace_lshift ? obj.nb$inplace_lshift : obj["__ilshift__"];
+    case "RShift":
+      return obj.nb$inplace_rshift ? obj.nb$inplace_rshift : obj["__irshift__"];
+    case "BitAnd":
+      return obj.nb$inplace_and;
+    case "BitOr":
+      return obj.nb$inplace_or;
+    case "BitXor":
+      return obj.nb$inplace_xor ? obj.nb$inplace_xor : obj["__ixor__"];
+  }
+};
+Sk.abstr.uoNameToSlotFunc_ = function (obj, name) {
+  if (obj === null) {
+    return undefined;
+  }
+  switch (name) {
+    case "USub":
+      return obj.nb$negative ? obj.nb$negative : obj["__neg__"];
+    case "UAdd":
+      return obj.nb$positive ? obj.nb$positive : obj["__pos__"];
+    case "Invert":
+      return obj.nb$invert ? obj.nb$invert : obj["__invert__"];
+  }
+};
+Sk.abstr.binary_op_ = function (v, w, opname) {
+  var wop;
+  var ret;
+  var vop;
+
+  // All Python inheritance is now enforced with Javascript inheritance
+  // (see Sk.abstr.setUpInheritance). This checks if w's type is a strict
+  // subclass of v's type
+  var w_is_subclass = w.constructor.prototype instanceof v.constructor;
+
+  // From the Python 2.7 docs:
+  //
+  // "If the right operand’s type is a subclass of the left operand’s type and
+  // that subclass provides the reflected method for the operation, this
+  // method will be called before the left operand’s non-reflected method.
+  // This behavior allows subclasses to override their ancestors’ operations."
+  //
+  // -- https://docs.python.org/2/reference/datamodel.html#index-92
+
+  if (w_is_subclass) {
+    wop = Sk.abstr.boNameToSlotFuncRhs_(w, opname);
+    if (wop !== undefined) {
+      if (wop.call) {
+        ret = wop.call(w, v);
+      } else {
+        ret = Sk.misceval.callsim(wop, w, v);
+      }
+      if (ret !== undefined && ret !== Sk.builtin.NotImplemented.NotImplemented$) {
+        return ret;
+      }
+    }
+  }
+  vop = Sk.abstr.boNameToSlotFuncLhs_(v, opname);
+  if (vop !== undefined) {
+    if (vop.call) {
+      ret = vop.call(v, w);
+    } else {
+      ret = Sk.misceval.callsim(vop, v, w);
+    }
+    if (ret !== undefined && ret !== Sk.builtin.NotImplemented.NotImplemented$) {
+      return ret;
+    }
+  }
+  // Don't retry RHS if failed above
+  if (!w_is_subclass) {
+    wop = Sk.abstr.boNameToSlotFuncRhs_(w, opname);
+    if (wop !== undefined) {
+      if (wop.call) {
+        ret = wop.call(w, v);
+      } else {
+        ret = Sk.misceval.callsim(wop, w, v);
+      }
+      if (ret !== undefined && ret !== Sk.builtin.NotImplemented.NotImplemented$) {
+        return ret;
+      }
+    }
+  }
+  Sk.abstr.binop_type_error(v, w, opname);
+};
+Sk.abstr.binary_iop_ = function (v, w, opname) {
+  var wop;
+  var ret;
+  var vop = Sk.abstr.iboNameToSlotFunc_(v, opname);
+  if (vop !== undefined) {
+    if (vop.call) {
+      ret = vop.call(v, w);
+    } else {
+      // assume that vop is an __xxx__ type method
+      ret = Sk.misceval.callsim(vop, v, w);
+    }
+    if (ret !== undefined && ret !== Sk.builtin.NotImplemented.NotImplemented$) {
+      return ret;
+    }
+  }
+  // If there wasn't an in-place operation, fall back to the binop
+  return Sk.abstr.binary_op_(v, w, opname);
+};
+Sk.abstr.unary_op_ = function (v, opname) {
+  var ret;
+  var vop = Sk.abstr.uoNameToSlotFunc_(v, opname);
+  if (vop !== undefined) {
+    if (vop.call) {
+      ret = vop.call(v);
+    } else {
+      // assume that vop is an __xxx__ type method
+      ret = Sk.misceval.callsim(vop, v); //  added to be like not-in-place... is this okay?
+    }
+
+    if (ret !== undefined) {
+      return ret;
+    }
+  }
+  Sk.abstr.unop_type_error(v, opname);
+};
+
+//
+// handle upconverting a/b from number to long if op causes too big/small a
+// result, or if either of the ops are already longs
+Sk.abstr.numOpAndPromote = function (a, b, opfn) {
+  var tmp;
+  var ans;
+  if (a === null || b === null) {
+    return undefined;
+  }
+  if (typeof a === "number" && typeof b === "number") {
+    ans = opfn(a, b);
+    // todo; handle float   Removed RNL (bugs in lng, and it should be a question of precision, not magnitude -- this was just wrong)
+    if ((ans > Sk.builtin.int_.threshold$ || ans < -Sk.builtin.int_.threshold$) && Math.floor(ans) === ans) {
+      return [Sk.builtin.lng.fromInt$(a), Sk.builtin.lng.fromInt$(b)];
+    } else {
+      return ans;
+    }
+  } else if (a === undefined || b === undefined) {
+    throw new Sk.builtin.NameError("Undefined variable in expression");
+  }
+  if (a.constructor === Sk.builtin.lng) {
+    return [a, b];
+  } else if ((a.constructor === Sk.builtin.int_ || a.constructor === Sk.builtin.float_) && b.constructor === Sk.builtin.complex) {
+    // special case of upconverting nmber and complex
+    // can we use here the Sk.builtin.checkComplex() method?
+    tmp = new Sk.builtin.complex(a);
+    return [tmp, b];
+  } else if (a.constructor === Sk.builtin.int_ || a.constructor === Sk.builtin.float_) {
+    return [a, b];
+  } else if (typeof a === "number") {
+    tmp = Sk.builtin.assk$(a);
+    return [tmp, b];
+  } else {
+    return undefined;
+  }
+};
+Sk.abstr.boNumPromote_ = {
+  "Add": function (a, b) {
+    return a + b;
+  },
+  "Sub": function (a, b) {
+    return a - b;
+  },
+  "Mult": function (a, b) {
+    return a * b;
+  },
+  "Mod": function (a, b) {
+    var m;
+    if (b === 0) {
+      throw new Sk.builtin.ZeroDivisionError("division or modulo by zero");
+    }
+    m = a % b;
+    return m * b < 0 ? m + b : m;
+  },
+  "Div": function (a, b) {
+    if (b === 0) {
+      throw new Sk.builtin.ZeroDivisionError("division or modulo by zero");
+    } else {
+      return a / b;
+    }
+  },
+  "FloorDiv": function (a, b) {
+    if (b === 0) {
+      throw new Sk.builtin.ZeroDivisionError("division or modulo by zero");
+    } else {
+      return Math.floor(a / b);
+    } // todo; wrong? neg?
+  },
+
+  "Pow": Math.pow,
+  "BitAnd": function (a, b) {
+    var m = a & b;
+    if (m < 0) {
+      m = m + 4294967296; // convert back to unsigned
+    }
+
+    return m;
+  },
+  "BitOr": function (a, b) {
+    var m = a | b;
+    if (m < 0) {
+      m = m + 4294967296; // convert back to unsigned
+    }
+
+    return m;
+  },
+  "BitXor": function (a, b) {
+    var m = a ^ b;
+    if (m < 0) {
+      m = m + 4294967296; // convert back to unsigned
+    }
+
+    return m;
+  },
+  "LShift": function (a, b) {
+    var m;
+    if (b < 0) {
+      throw new Sk.builtin.ValueError("negative shift count");
+    }
+    m = a << b;
+    if (m > a) {
+      return m;
+    } else {
+      // Fail, this will get recomputed with longs
+      return a * Math.pow(2, b);
+    }
+  },
+  "RShift": function (a, b) {
+    var m;
+    if (b < 0) {
+      throw new Sk.builtin.ValueError("negative shift count");
+    }
+    m = a >> b;
+    if (a > 0 && m < 0) {
+      // fix incorrect sign extension
+      m = m & Math.pow(2, 32 - b) - 1;
+    }
+    return m;
+  }
+};
+Sk.abstr.numberBinOp = function (v, w, op) {
+  var tmp;
+  var numPromoteFunc = Sk.abstr.boNumPromote_[op];
+  if (numPromoteFunc !== undefined) {
+    tmp = Sk.abstr.numOpAndPromote(v, w, numPromoteFunc);
+    if (typeof tmp === "number") {
+      return tmp;
+    } else if (tmp !== undefined && tmp.constructor === Sk.builtin.int_) {
+      return tmp;
+    } else if (tmp !== undefined && tmp.constructor === Sk.builtin.float_) {
+      return tmp;
+    } else if (tmp !== undefined && tmp.constructor === Sk.builtin.lng) {
+      return tmp;
+    } else if (tmp !== undefined) {
+      v = tmp[0];
+      w = tmp[1];
+    }
+  }
+  return Sk.abstr.binary_op_(v, w, op);
+};
+goog.exportSymbol("Sk.abstr.numberBinOp", Sk.abstr.numberBinOp);
+Sk.abstr.numberInplaceBinOp = function (v, w, op) {
+  var tmp;
+  var numPromoteFunc = Sk.abstr.boNumPromote_[op];
+  if (numPromoteFunc !== undefined) {
+    tmp = Sk.abstr.numOpAndPromote(v, w, numPromoteFunc);
+    if (typeof tmp === "number") {
+      return tmp;
+    } else if (tmp !== undefined && tmp.constructor === Sk.builtin.int_) {
+      return tmp;
+    } else if (tmp !== undefined && tmp.constructor === Sk.builtin.float_) {
+      return tmp;
+    } else if (tmp !== undefined && tmp.constructor === Sk.builtin.lng) {
+      return tmp;
+    } else if (tmp !== undefined) {
+      v = tmp[0];
+      w = tmp[1];
+    }
+  }
+  return Sk.abstr.binary_iop_(v, w, op);
+};
+goog.exportSymbol("Sk.abstr.numberInplaceBinOp", Sk.abstr.numberInplaceBinOp);
+Sk.abstr.numberUnaryOp = function (v, op) {
+  var value;
+  if (op === "Not") {
+    return Sk.misceval.isTrue(v) ? Sk.builtin.bool.false$ : Sk.builtin.bool.true$;
+  } else if (v instanceof Sk.builtin.bool) {
+    value = Sk.builtin.asnum$(v);
+    if (op === "USub") {
+      return new Sk.builtin.int_(-value);
+    }
+    if (op === "UAdd") {
+      return new Sk.builtin.int_(value);
+    }
+    if (op === "Invert") {
+      return new Sk.builtin.int_(~value);
+    }
+  } else {
+    if (op === "USub" && v.nb$negative) {
+      return v.nb$negative();
+    }
+    if (op === "UAdd" && v.nb$positive) {
+      return v.nb$positive();
+    }
+    if (op === "Invert" && v.nb$invert) {
+      return v.nb$invert();
+    }
+  }
+  return Sk.abstr.unary_op_(v, op);
+};
+goog.exportSymbol("Sk.abstr.numberUnaryOp", Sk.abstr.numberUnaryOp);
+
+//
+// Sequence
+//
+
+Sk.abstr.fixSeqIndex_ = function (seq, i) {
+  i = Sk.builtin.asnum$(i);
+  if (i < 0 && seq.sq$length) {
+    i += seq.sq$length();
+  }
+  return i;
+};
+
+/**
+ * @param {*} seq
+ * @param {*} ob
+ * @param {boolean=} canSuspend
+ */
+Sk.abstr.sequenceContains = function (seq, ob, canSuspend) {
+  var seqtypename;
+  var special;
+  var r;
+  if (seq.sq$contains) {
+    return seq.sq$contains(ob);
+  }
+
+  /**
+   *  Look for special method and call it, we have to distinguish between built-ins and
+   *  python objects
+   */
+  special = Sk.abstr.lookupSpecial(seq, "__contains__");
+  if (special != null) {
+    // method on builtin, provide this arg
+    return Sk.misceval.isTrue(Sk.misceval.callsim(special, seq, ob));
+  }
+  if (!Sk.builtin.checkIterable(seq)) {
+    seqtypename = Sk.abstr.typeName(seq);
+    throw new Sk.builtin.TypeError("argument of type '" + seqtypename + "' is not iterable");
+  }
+  r = Sk.misceval.iterFor(Sk.abstr.iter(seq), function (i) {
+    if (Sk.misceval.richCompareBool(i, ob, "Eq")) {
+      return new Sk.misceval.Break(true);
+    } else {
+      return false;
+    }
+  }, false);
+  return canSuspend ? r : Sk.misceval.retryOptionalSuspensionOrThrow(r);
+};
+Sk.abstr.sequenceConcat = function (seq1, seq2) {
+  var seq1typename;
+  if (seq1.sq$concat) {
+    return seq1.sq$concat(seq2);
+  }
+  seq1typename = Sk.abstr.typeName(seq1);
+  throw new Sk.builtin.TypeError("'" + seq1typename + "' object can't be concatenated");
+};
+Sk.abstr.sequenceGetIndexOf = function (seq, ob) {
+  var seqtypename;
+  var i, it;
+  var index;
+  if (seq.index) {
+    return Sk.misceval.callsim(seq.index, seq, ob);
+  }
+  if (Sk.builtin.checkIterable(seq)) {
+    index = 0;
+    for (it = Sk.abstr.iter(seq), i = it.tp$iternext(); i !== undefined; i = it.tp$iternext()) {
+      if (Sk.misceval.richCompareBool(ob, i, "Eq")) {
+        return new Sk.builtin.int_(index);
+      }
+      index += 1;
+    }
+    throw new Sk.builtin.ValueError("sequence.index(x): x not in sequence");
+  }
+  seqtypename = Sk.abstr.typeName(seq);
+  throw new Sk.builtin.TypeError("argument of type '" + seqtypename + "' is not iterable");
+};
+Sk.abstr.sequenceGetCountOf = function (seq, ob) {
+  var seqtypename;
+  var i, it;
+  var count;
+  if (seq.count) {
+    return Sk.misceval.callsim(seq.count, seq, ob);
+  }
+  if (Sk.builtin.checkIterable(seq)) {
+    count = 0;
+    for (it = Sk.abstr.iter(seq), i = it.tp$iternext(); i !== undefined; i = it.tp$iternext()) {
+      if (Sk.misceval.richCompareBool(ob, i, "Eq")) {
+        count += 1;
+      }
+    }
+    return new Sk.builtin.int_(count);
+  }
+  seqtypename = Sk.abstr.typeName(seq);
+  throw new Sk.builtin.TypeError("argument of type '" + seqtypename + "' is not iterable");
+};
+Sk.abstr.sequenceGetItem = function (seq, i, canSuspend) {
+  var seqtypename;
+  if (seq.mp$subscript) {
+    return seq.mp$subscript(i);
+  }
+  seqtypename = Sk.abstr.typeName(seq);
+  throw new Sk.builtin.TypeError("'" + seqtypename + "' object is unsubscriptable");
+};
+Sk.abstr.sequenceSetItem = function (seq, i, x, canSuspend) {
+  var seqtypename;
+  if (seq.mp$ass_subscript) {
+    return seq.mp$ass_subscript(i, x);
+  }
+  seqtypename = Sk.abstr.typeName(seq);
+  throw new Sk.builtin.TypeError("'" + seqtypename + "' object does not support item assignment");
+};
+Sk.abstr.sequenceDelItem = function (seq, i) {
+  var seqtypename;
+  if (seq.sq$del_item) {
+    i = Sk.abstr.fixSeqIndex_(seq, i);
+    seq.sq$del_item(i);
+    return;
+  }
+  seqtypename = Sk.abstr.typeName(seq);
+  throw new Sk.builtin.TypeError("'" + seqtypename + "' object does not support item deletion");
+};
+Sk.abstr.sequenceRepeat = function (f, seq, n) {
+  var ntypename;
+  var count;
+  n = Sk.builtin.asnum$(n);
+  count = Sk.misceval.asIndex(n);
+  if (count === undefined) {
+    ntypename = Sk.abstr.typeName(n);
+    throw new Sk.builtin.TypeError("can't multiply sequence by non-int of type '" + ntypename + "'");
+  }
+  return f.call(seq, n);
+};
+Sk.abstr.sequenceGetSlice = function (seq, i1, i2) {
+  var seqtypename;
+  if (seq.sq$slice) {
+    i1 = Sk.abstr.fixSeqIndex_(seq, i1);
+    i2 = Sk.abstr.fixSeqIndex_(seq, i2);
+    return seq.sq$slice(i1, i2);
+  } else if (seq.mp$subscript) {
+    return seq.mp$subscript(new Sk.builtin.slice(i1, i2));
+  }
+  seqtypename = Sk.abstr.typeName(seq);
+  throw new Sk.builtin.TypeError("'" + seqtypename + "' object is unsliceable");
+};
+Sk.abstr.sequenceDelSlice = function (seq, i1, i2) {
+  var seqtypename;
+  if (seq.sq$del_slice) {
+    i1 = Sk.abstr.fixSeqIndex_(seq, i1);
+    i2 = Sk.abstr.fixSeqIndex_(seq, i2);
+    seq.sq$del_slice(i1, i2);
+    return;
+  }
+  seqtypename = Sk.abstr.typeName(seq);
+  throw new Sk.builtin.TypeError("'" + seqtypename + "' doesn't support slice deletion");
+};
+Sk.abstr.sequenceSetSlice = function (seq, i1, i2, x) {
+  var seqtypename;
+  if (seq.sq$ass_slice) {
+    i1 = Sk.abstr.fixSeqIndex_(seq, i1);
+    i2 = Sk.abstr.fixSeqIndex_(seq, i2);
+    seq.sq$ass_slice(i1, i2, x);
+  } else if (seq.mp$ass_subscript) {
+    seq.mp$ass_subscript(new Sk.builtin.slice(i1, i2), x);
+  } else {
+    seqtypename = Sk.abstr.typeName(seq);
+    throw new Sk.builtin.TypeError("'" + seqtypename + "' object doesn't support slice assignment");
+  }
+};
+
+// seq - Python object to unpack
+// n   - JavaScript number of items to unpack
+Sk.abstr.sequenceUnpack = function (seq, n) {
+  var res = [];
+  var it, i;
+  if (!Sk.builtin.checkIterable(seq)) {
+    throw new Sk.builtin.TypeError("'" + Sk.abstr.typeName(seq) + "' object is not iterable");
+  }
+  for (it = Sk.abstr.iter(seq), i = it.tp$iternext(); i !== undefined && res.length < n; i = it.tp$iternext()) {
+    res.push(i);
+  }
+  if (res.length < n) {
+    throw new Sk.builtin.ValueError("need more than " + res.length + " values to unpack");
+  }
+  if (i !== undefined) {
+    throw new Sk.builtin.ValueError("too many values to unpack");
+  }
+
+  // Return Javascript array of items
+  return res;
+};
+
+//
+// Object
+//
+
+Sk.abstr.objectFormat = function (obj, format_spec) {
+  var meth; // PyObject
+  var result; // PyObject
+
+  // If no format_spec is provided, use an empty string
+  if (format_spec == null) {
+    format_spec = "";
+  }
+
+  // Find the (unbound!) __format__ method (a borrowed reference)
+  meth = Sk.abstr.lookupSpecial(obj, "__format__");
+  if (meth == null) {
+    throw new Sk.builtin.TypeError("Type " + Sk.abstr.typeName(obj) + "doesn't define __format__");
+  }
+
+  // And call it
+  result = Sk.misceval.callsim(meth, obj, format_spec);
+  if (!Sk.builtin.checkString(result)) {
+    throw new Sk.builtin.TypeError("__format__ must return a str, not " + Sk.abstr.typeName(result));
+  }
+  return result;
+};
+Sk.abstr.objectAdd = function (a, b) {
+  var btypename;
+  var atypename;
+  if (a.nb$add) {
+    return a.nb$add(b);
+  }
+  atypename = Sk.abstr.typeName(a);
+  btypename = Sk.abstr.typeName(b);
+  throw new Sk.builtin.TypeError("unsupported operand type(s) for +: '" + atypename + "' and '" + btypename + "'");
+};
+
+// in Python 2.6, this behaviour seems to be defined for numbers and bools (converts bool to int)
+Sk.abstr.objectNegative = function (obj) {
+  var objtypename;
+  var obj_asnum = Sk.builtin.asnum$(obj); // this will also convert bool type to int
+
+  if (obj instanceof Sk.builtin.bool) {
+    obj = new Sk.builtin.int_(obj_asnum);
+  }
+  if (obj.nb$negative) {
+    return obj.nb$negative();
+  }
+  objtypename = Sk.abstr.typeName(obj);
+  throw new Sk.builtin.TypeError("bad operand type for unary -: '" + objtypename + "'");
+};
+
+// in Python 2.6, this behaviour seems to be defined for numbers and bools (converts bool to int)
+Sk.abstr.objectPositive = function (obj) {
+  var objtypename = Sk.abstr.typeName(obj);
+  var obj_asnum = Sk.builtin.asnum$(obj); // this will also convert bool type to int
+
+  if (obj instanceof Sk.builtin.bool) {
+    obj = new Sk.builtin.int_(obj_asnum);
+  }
+  if (obj.nb$negative) {
+    return obj.nb$positive();
+  }
+  throw new Sk.builtin.TypeError("bad operand type for unary +: '" + objtypename + "'");
+};
+Sk.abstr.objectDelItem = function (o, key) {
+  var otypename;
+  var keytypename;
+  var keyValue;
+  if (o !== null) {
+    if (o.mp$del_subscript) {
+      o.mp$del_subscript(key);
+      return;
+    }
+    if (o.sq$ass_item) {
+      keyValue = Sk.misceval.asIndex(key);
+      if (keyValue === undefined) {
+        keytypename = Sk.abstr.typeName(key);
+        throw new Sk.builtin.TypeError("sequence index must be integer, not '" + keytypename + "'");
+      }
+      Sk.abstr.sequenceDelItem(o, keyValue);
+      return;
+    }
+    // if o is a slice do something else...
+  }
+
+  otypename = Sk.abstr.typeName(o);
+  throw new Sk.builtin.TypeError("'" + otypename + "' object does not support item deletion");
+};
+goog.exportSymbol("Sk.abstr.objectDelItem", Sk.abstr.objectDelItem);
+Sk.abstr.objectGetItem = function (o, key, canSuspend) {
+  var otypename;
+  if (o !== null) {
+    if (o.tp$getitem) {
+      return o.tp$getitem(key, canSuspend);
+    } else if (o.mp$subscript) {
+      return o.mp$subscript(key, canSuspend);
+    } else if (Sk.misceval.isIndex(key) && o.sq$item) {
+      return Sk.abstr.sequenceGetItem(o, Sk.misceval.asIndex(key), canSuspend);
+    }
+  }
+  otypename = Sk.abstr.typeName(o);
+  throw new Sk.builtin.TypeError("'" + otypename + "' does not support indexing");
+};
+goog.exportSymbol("Sk.abstr.objectGetItem", Sk.abstr.objectGetItem);
+Sk.abstr.objectSetItem = function (o, key, v, canSuspend) {
+  var otypename;
+  if (o !== null) {
+    if (o.tp$setitem) {
+      return o.tp$setitem(key, v, canSuspend);
+    } else if (o.mp$ass_subscript) {
+      return o.mp$ass_subscript(key, v, canSuspend);
+    } else if (Sk.misceval.isIndex(key) && o.sq$ass_item) {
+      return Sk.abstr.sequenceSetItem(o, Sk.misceval.asIndex(key), v, canSuspend);
+    }
+  }
+  otypename = Sk.abstr.typeName(o);
+  throw new Sk.builtin.TypeError("'" + otypename + "' does not support item assignment");
+};
+goog.exportSymbol("Sk.abstr.objectSetItem", Sk.abstr.objectSetItem);
+Sk.abstr.gattr = function (obj, nameJS, canSuspend) {
+  var ret, f;
+  var objname = Sk.abstr.typeName(obj);
+  if (obj === null) {
+    throw new Sk.builtin.AttributeError("'" + objname + "' object has no attribute '" + nameJS + "'");
+  }
+  if (obj.tp$getattr !== undefined) {
+    ret = obj.tp$getattr(nameJS, canSuspend);
+  }
+  ret = Sk.misceval.chain(ret, function (r) {
+    if (r === undefined) {
+      throw new Sk.builtin.AttributeError("'" + objname + "' object has no attribute '" + nameJS + "'");
+    }
+    return r;
+  });
+  return canSuspend ? ret : Sk.misceval.retryOptionalSuspensionOrThrow(ret);
+};
+goog.exportSymbol("Sk.abstr.gattr", Sk.abstr.gattr);
+Sk.abstr.sattr = function (obj, nameJS, data, canSuspend) {
+  var objname = Sk.abstr.typeName(obj),
+    r,
+    setf;
+  if (obj === null) {
+    throw new Sk.builtin.AttributeError("'" + objname + "' object has no attribute '" + nameJS + "'");
+  }
+  if (obj.tp$setattr !== undefined) {
+    return obj.tp$setattr(nameJS, data, canSuspend);
+  } else {
+    throw new Sk.builtin.AttributeError("'" + objname + "' object has no attribute '" + nameJS + "'");
+  }
+};
+goog.exportSymbol("Sk.abstr.sattr", Sk.abstr.sattr);
+Sk.abstr.iternext = function (it, canSuspend) {
+  return it.tp$iternext(canSuspend);
+};
+goog.exportSymbol("Sk.abstr.iternext", Sk.abstr.iternext);
+
+/**
+ * Get the iterator for a Python object  This iterator could be one of the following.
+ * This is the preferred mechanism for consistently getting the correct iterator.  You should
+ * not just use tp$iter because that could lead to incorrect behavior of a user created class.
+ *
+ * - tp$iter
+ * - A user defined `__iter__` method
+ * - A user defined `__getitem__` method
+ *
+ * @param obj
+ *
+ * @throws {Sk.builtin.TypeError}
+ * @returns {Object}
+ */
+
+Sk.abstr.iter = function (obj) {
+  var iter;
+  var getit;
+  var ret;
+
+  /**
+   * Builds an iterator around classes that have a __getitem__ method.
+   *
+   * @constructor
+   */
+  var seqIter = function (obj) {
+    this.idx = 0;
+    this.myobj = obj;
+    this.getitem = Sk.abstr.lookupSpecial(obj, "__getitem__");
+    this.tp$iternext = function () {
+      var ret;
+      try {
+        ret = Sk.misceval.callsim(this.getitem, this.myobj, Sk.ffi.remapToPy(this.idx));
+      } catch (e) {
+        if (e instanceof Sk.builtin.IndexError || e instanceof Sk.builtin.StopIteration) {
+          return undefined;
+        } else {
+          throw e;
+        }
+      }
+      this.idx++;
+      return ret;
+    };
+  };
+  if (obj.tp$getattr) {
+    iter = Sk.abstr.lookupSpecial(obj, "__iter__");
+    if (iter) {
+      ret = Sk.misceval.callsim(iter, obj);
+      if (ret.tp$iternext) {
+        return ret;
+      }
+    }
+  }
+  if (obj.tp$iter) {
+    try {
+      // catch and ignore not iterable error here.
+      ret = obj.tp$iter();
+      if (ret.tp$iternext) {
+        return ret;
+      }
+    } catch (e) {}
+  }
+  getit = Sk.abstr.lookupSpecial(obj, "__getitem__");
+  if (getit) {
+    // create internal iterobject if __getitem__
+    return new seqIter(obj);
+  }
+  throw new Sk.builtin.TypeError("'" + Sk.abstr.typeName(obj) + "' object is not iterable");
+};
+goog.exportSymbol("Sk.abstr.iter", Sk.abstr.iter);
+
+/**
+ * Special method look up. First try getting the method via
+ * internal dict and getattr. If getattr is not present (builtins)
+ * try if method is defined on the object itself
+ *
+ * @returns {null|Object} Return null if not found or the function
+ */
+Sk.abstr.lookupSpecial = function (op, str) {
+  var res;
+  var obtp;
+  if (op.ob$type) {
+    obtp = op.ob$type;
+  } else {
+    return null;
+  }
+  return Sk.builtin.type.typeLookup(obtp, str);
+};
+goog.exportSymbol("Sk.abstr.lookupSpecial", Sk.abstr.lookupSpecial);
+
+/**
+ * Mark a class as unhashable and prevent its `__hash__` function from being called.
+ * @param  {function(...[?])} thisClass The class to mark as unhashable.
+ * @return {undefined}
+ */
+Sk.abstr.markUnhashable = function (thisClass) {
+  var proto = thisClass.prototype;
+  proto.__hash__ = Sk.builtin.none.none$;
+  proto.tp$hash = Sk.builtin.none.none$;
+};
+
+/**
+ * Set up inheritance between two Python classes. This allows only for single
+ * inheritance -- multiple inheritance is not supported by Javascript.
+ *
+ * Javascript's inheritance is prototypal. This means that properties must
+ * be defined on the superclass' prototype in order for subclasses to inherit
+ * them.
+ *
+ * ```
+ * Sk.superclass.myProperty                 # will NOT be inherited
+ * Sk.superclass.prototype.myProperty       # will be inherited
+ * ```
+ *
+ * In order for a class to be subclassable, it must (directly or indirectly)
+ * inherit from Sk.builtin.object so that it will be properly initialized in
+ * {@link Sk.doOneTimeInitialization} (in src/import.js). Further, all Python
+ * builtins should inherit from Sk.builtin.object.
+ *
+ * @param {string} childName The Python name of the child (subclass).
+ * @param {function(...[?])} child     The subclass.
+ * @param {function(...[?])} parent    The superclass.
+ * @return {undefined}
+ */
+Sk.abstr.setUpInheritance = function (childName, child, parent) {
+  goog.inherits(child, parent);
+  child.prototype.tp$base = parent;
+  child.prototype.tp$name = childName;
+  child.prototype.ob$type = Sk.builtin.type.makeIntoTypeObj(childName, child);
+};
+
+/**
+ * Call the super constructor of the provided class, with the object `self` as
+ * the `this` value of that constructor. Any arguments passed to this function
+ * after `self` will be passed as-is to the constructor.
+ *
+ * @param  {function(...[?])} thisClass The subclass.
+ * @param  {Object} self      The instance of the subclas.
+ * @param  {...?} args Arguments to pass to the constructor.
+ * @return {undefined}
+ */
+Sk.abstr.superConstructor = function (thisClass, self, args) {
+  var argumentsForConstructor = Array.prototype.slice.call(arguments, 2);
+  thisClass.prototype.tp$base.apply(self, argumentsForConstructor);
+};
+
+/* ---- /Users/rob/skulpty/lib/../node_modules/skulpt/src/object.js ---- */
+
+/**
+ * @constructor
+ * Sk.builtin.object
+ *
+ * @description
+ * Constructor for Python object. All Python classes (builtin and user-defined)
+ * should inherit from this class.
+ *
+ * @return {Sk.builtin.object} Python object
+ */
+Sk.builtin.object = function () {
+  if (!(this instanceof Sk.builtin.object)) {
+    return new Sk.builtin.object();
+  }
+  return this;
+};
+var _tryGetSubscript = function (dict, pyName) {
+  try {
+    return dict.mp$subscript(pyName);
+  } catch (x) {
+    return undefined;
+  }
+};
+
+/**
+ * Get an attribute
+ * @param {string} name JS name of the attribute
+ * @param {boolean=} canSuspend Can we return a suspension?
+ * @return {undefined}
+ */
+Sk.builtin.object.prototype.GenericGetAttr = function (name, canSuspend) {
+  var res;
+  var f;
+  var descr;
+  var tp;
+  var dict;
+  var pyName = new Sk.builtin.str(name);
+  goog.asserts.assert(typeof name === "string");
+  tp = this.ob$type;
+  goog.asserts.assert(tp !== undefined, "object has no ob$type!");
+  dict = this["$d"] || this.constructor["$d"];
+
+  // todo; assert? force?
+  if (dict) {
+    if (dict.mp$lookup) {
+      res = dict.mp$lookup(pyName);
+    } else if (dict.mp$subscript) {
+      res = _tryGetSubscript(dict, pyName);
+    } else if (typeof dict === "object") {
+      // todo; definitely the wrong place for this. other custom tp$getattr won't work on object -- bnm -- implemented custom __getattr__ in abstract.js
+      res = dict[name];
+    }
+    if (res !== undefined) {
+      return res;
+    }
+  }
+  descr = Sk.builtin.type.typeLookup(tp, name);
+
+  // otherwise, look in the type for a descr
+  if (descr !== undefined && descr !== null) {
+    f = descr.tp$descr_get;
+    // todo - data descriptors (ie those with tp$descr_set too) get a different lookup priority
+
+    if (f) {
+      // non-data descriptor
+      return f.call(descr, this, this.ob$type, canSuspend);
+    }
+  }
+  if (descr !== undefined) {
+    return descr;
+  }
+  return undefined;
+};
+goog.exportSymbol("Sk.builtin.object.prototype.GenericGetAttr", Sk.builtin.object.prototype.GenericGetAttr);
+Sk.builtin.object.prototype.GenericPythonGetAttr = function (self, name) {
+  return Sk.builtin.object.prototype.GenericGetAttr.call(self, name.v);
+};
+goog.exportSymbol("Sk.builtin.object.prototype.GenericPythonGetAttr", Sk.builtin.object.prototype.GenericPythonGetAttr);
+
+/**
+ * @param {string} name
+ * @param {undefined} value
+ * @param {boolean=} canSuspend
+ * @return {undefined}
+ */
+Sk.builtin.object.prototype.GenericSetAttr = function (name, value, canSuspend) {
+  var objname = Sk.abstr.typeName(this);
+  var pyname;
+  var dict;
+  var tp = this.ob$type;
+  var descr;
+  var f;
+  goog.asserts.assert(typeof name === "string");
+  goog.asserts.assert(tp !== undefined, "object has no ob$type!");
+  dict = this["$d"] || this.constructor["$d"];
+  descr = Sk.builtin.type.typeLookup(tp, name);
+
+  // otherwise, look in the type for a descr
+  if (descr !== undefined && descr !== null) {
+    f = descr.tp$descr_set;
+    // todo; is this the right lookup priority for data descriptors?
+    if (f) {
+      return f.call(descr, this, value, canSuspend);
+    }
+  }
+  if (dict.mp$ass_subscript) {
+    pyname = new Sk.builtin.str(name);
+    if (this instanceof Sk.builtin.object && !this.ob$type.sk$klass && dict.mp$lookup(pyname) === undefined) {
+      // Cannot add new attributes to a builtin object
+      throw new Sk.builtin.AttributeError("'" + objname + "' object has no attribute '" + Sk.unfixReserved(name) + "'");
+    }
+    dict.mp$ass_subscript(new Sk.builtin.str(name), value);
+  } else if (typeof dict === "object") {
+    dict[name] = value;
+  }
+};
+goog.exportSymbol("Sk.builtin.object.prototype.GenericSetAttr", Sk.builtin.object.prototype.GenericSetAttr);
+Sk.builtin.object.prototype.GenericPythonSetAttr = function (self, name, value) {
+  return Sk.builtin.object.prototype.GenericSetAttr.call(self, name.v, value);
+};
+goog.exportSymbol("Sk.builtin.object.prototype.GenericPythonSetAttr", Sk.builtin.object.prototype.GenericPythonSetAttr);
+Sk.builtin.object.prototype.HashNotImplemented = function () {
+  throw new Sk.builtin.TypeError("unhashable type: '" + Sk.abstr.typeName(this) + "'");
+};
+Sk.builtin.object.prototype.tp$getattr = Sk.builtin.object.prototype.GenericGetAttr;
+Sk.builtin.object.prototype.tp$setattr = Sk.builtin.object.prototype.GenericSetAttr;
+
+// Although actual attribute-getting happens in pure Javascript via tp$getattr, classes
+// overriding __getattr__ etc need to be able to call object.__getattr__ etc from Python
+Sk.builtin.object.prototype["__getattr__"] = Sk.builtin.object.prototype.GenericPythonGetAttr;
+Sk.builtin.object.prototype["__setattr__"] = Sk.builtin.object.prototype.GenericPythonSetAttr;
+
+/**
+ * The name of this class.
+ * @type {string}
+ */
+Sk.builtin.object.prototype.tp$name = "object";
+
+/**
+ * The type object of this class.
+ * @type {Sk.builtin.type}
+ */
+Sk.builtin.object.prototype.ob$type = Sk.builtin.type.makeIntoTypeObj("object", Sk.builtin.object);
+Sk.builtin.object.prototype.ob$type.sk$klass = undefined; // Nonsense for closure compiler
+Sk.builtin.object.prototype.tp$descr_set = undefined; // Nonsense for closure compiler
+
+/** Default implementations of dunder methods found in all Python objects */
+/**
+ * Default implementation of __new__ just calls the class constructor
+ * @name  __new__
+ * @memberOf Sk.builtin.object.prototype
+ * @instance
+ */
+Sk.builtin.object.prototype["__new__"] = function (cls) {
+  Sk.builtin.pyCheckArgs("__new__", arguments, 1, 1, false, false);
+  return new cls([], []);
+};
+
+/**
+ * Python wrapper for `__repr__` method.
+ * @name  __repr__
+ * @memberOf Sk.builtin.object.prototype
+ * @instance
+ */
+Sk.builtin.object.prototype["__repr__"] = function (self) {
+  Sk.builtin.pyCheckArgs("__repr__", arguments, 0, 0, false, true);
+  return self["$r"]();
+};
+
+/**
+ * Python wrapper for `__str__` method.
+ * @name  __str__
+ * @memberOf Sk.builtin.object.prototype
+ * @instance
+ */
+Sk.builtin.object.prototype["__str__"] = function (self) {
+  Sk.builtin.pyCheckArgs("__str__", arguments, 0, 0, false, true);
+  return self["$r"]();
+};
+
+/**
+ * Python wrapper for `__hash__` method.
+ * @name  __hash__
+ * @memberOf Sk.builtin.object.prototype
+ * @instance
+ */
+Sk.builtin.object.prototype["__hash__"] = function (self) {
+  Sk.builtin.pyCheckArgs("__hash__", arguments, 0, 0, false, true);
+  return self.tp$hash();
+};
+
+/**
+ * Python wrapper for `__eq__` method.
+ * @name  __eq__
+ * @memberOf Sk.builtin.object.prototype
+ * @instance
+ */
+Sk.builtin.object.prototype["__eq__"] = function (self, other) {
+  Sk.builtin.pyCheckArgs("__eq__", arguments, 1, 1, false, true);
+  return self.ob$eq(other);
+};
+
+/**
+ * Python wrapper for `__ne__` method.
+ * @name  __ne__
+ * @memberOf Sk.builtin.object.prototype
+ * @instance
+ */
+Sk.builtin.object.prototype["__ne__"] = function (self, other) {
+  Sk.builtin.pyCheckArgs("__ne__", arguments, 1, 1, false, true);
+  return self.ob$ne(other);
+};
+
+/**
+ * Python wrapper for `__lt__` method.
+ * @name  __lt__
+ * @memberOf Sk.builtin.object.prototype
+ * @instance
+ */
+Sk.builtin.object.prototype["__lt__"] = function (self, other) {
+  Sk.builtin.pyCheckArgs("__lt__", arguments, 1, 1, false, true);
+  return self.ob$lt(other);
+};
+
+/**
+ * Python wrapper for `__le__` method.
+ * @name  __le__
+ * @memberOf Sk.builtin.object.prototype
+ * @instance
+ */
+Sk.builtin.object.prototype["__le__"] = function (self, other) {
+  Sk.builtin.pyCheckArgs("__le__", arguments, 1, 1, false, true);
+  return self.ob$le(other);
+};
+
+/**
+ * Python wrapper for `__gt__` method.
+ * @name  __gt__
+ * @memberOf Sk.builtin.object.prototype
+ * @instance
+ */
+Sk.builtin.object.prototype["__gt__"] = function (self, other) {
+  Sk.builtin.pyCheckArgs("__gt__", arguments, 1, 1, false, true);
+  return self.ob$gt(other);
+};
+
+/**
+ * Python wrapper for `__ge__` method.
+ * @name  __ge__
+ * @memberOf Sk.builtin.object.prototype
+ * @instance
+ */
+Sk.builtin.object.prototype["__ge__"] = function (self, other) {
+  Sk.builtin.pyCheckArgs("__ge__", arguments, 1, 1, false, true);
+  return self.ob$ge(other);
+};
+
+/** Default implementations of Javascript functions used in dunder methods */
+
+/**
+ * Return the string representation of this instance.
+ *
+ * Javascript function, returns Python object.
+ *
+ * @name  $r
+ * @memberOf Sk.builtin.object.prototype
+ * @return {Sk.builtin.str} The Python string representation of this instance.
+ */
+Sk.builtin.object.prototype["$r"] = function () {
+  return new Sk.builtin.str("<object>");
+};
+Sk.builtin.hashCount = 1;
+Sk.builtin.idCount = 1;
+
+/**
+ * Return the hash value of this instance.
+ *
+ * Javascript function, returns Python object.
+ *
+ * @return {Sk.builtin.int_} The hash value
+ */
+Sk.builtin.object.prototype.tp$hash = function () {
+  if (!this.$savedHash_) {
+    this.$savedHash_ = new Sk.builtin.int_(Sk.builtin.hashCount++);
+  }
+  return this.$savedHash_;
+};
+
+/**
+ * Perform equality check between this instance and a Python object (i.e. this == other).
+ *
+ * Implements `__eq__` dunder method.
+ *
+ * Javascript function, returns Python object.
+ *
+ * @param  {Object} other The Python object to check for equality.
+ * @return {(Sk.builtin.bool|Sk.builtin.NotImplemented)} true if equal, false otherwise
+ */
+Sk.builtin.object.prototype.ob$eq = function (other) {
+  if (this === other) {
+    return Sk.builtin.bool.true$;
+  }
+  return Sk.builtin.NotImplemented.NotImplemented$;
+};
+
+/**
+ * Perform non-equality check between this instance and a Python object (i.e. this != other).
+ *
+ * Implements `__ne__` dunder method.
+ *
+ * Javascript function, returns Python object.
+ *
+ * @param  {Object} other The Python object to check for non-equality.
+ * @return {(Sk.builtin.bool|Sk.builtin.NotImplemented)} true if not equal, false otherwise
+ */
+Sk.builtin.object.prototype.ob$ne = function (other) {
+  if (this === other) {
+    return Sk.builtin.bool.false$;
+  }
+  return Sk.builtin.NotImplemented.NotImplemented$;
+};
+
+/**
+ * Determine if this instance is less than a Python object (i.e. this < other).
+ *
+ * Implements `__lt__` dunder method.
+ *
+ * Javascript function, returns Python object.
+ *
+ * @param  {Object} other The Python object to compare.
+ * @return {(Sk.builtin.bool|Sk.builtin.NotImplemented)} true if this < other, false otherwise
+ */
+Sk.builtin.object.prototype.ob$lt = function (other) {
+  return Sk.builtin.NotImplemented.NotImplemented$;
+};
+
+/**
+ * Determine if this instance is less than or equal to a Python object (i.e. this <= other).
+ *
+ * Implements `__le__` dunder method.
+ *
+ * Javascript function, returns Python object.
+ *
+ * @param  {Object} other The Python object to compare.
+ * @return {(Sk.builtin.bool|Sk.builtin.NotImplemented)} true if this <= other, false otherwise
+ */
+Sk.builtin.object.prototype.ob$le = function (other) {
+  return Sk.builtin.NotImplemented.NotImplemented$;
+};
+
+/**
+ * Determine if this instance is greater than a Python object (i.e. this > other).
+ *
+ * Implements `__gt__` dunder method.
+ *
+ * Javascript function, returns Python object.
+ *
+ * @param  {Object} other The Python object to compare.
+ * @return {(Sk.builtin.bool|Sk.builtin.NotImplemented)} true if this > other, false otherwise
+ */
+Sk.builtin.object.prototype.ob$gt = function (other) {
+  return Sk.builtin.NotImplemented.NotImplemented$;
+};
+
+/**
+ * Determine if this instance is greater than or equal to a Python object (i.e. this >= other).
+ *
+ * Implements `__ge__` dunder method.
+ *
+ * Javascript function, returns Python object.
+ *
+ * @param  {Object} other The Python object to compare.
+ * @return {(Sk.builtin.bool|Sk.builtin.NotImplemented)} true if this >= other, false otherwise
+ */
+Sk.builtin.object.prototype.ob$ge = function (other) {
+  return Sk.builtin.NotImplemented.NotImplemented$;
+};
+
+// Wrap the following functions in Sk.builtin.func once that class is initialized
+/**
+ * Array of all the Python functions which are methods of this class.
+ * @type {Array}
+ */
+Sk.builtin.object.pythonFunctions = ["__repr__", "__str__", "__hash__", "__eq__", "__ne__", "__lt__", "__le__", "__gt__", "__ge__", "__getattr__", "__setattr__"];
+
+/**
+ * @constructor
+ * Sk.builtin.none
+ *
+ * @extends {Sk.builtin.object}
+ */
+Sk.builtin.none = function () {
+  this.v = null;
+};
+Sk.abstr.setUpInheritance("NoneType", Sk.builtin.none, Sk.builtin.object);
+
+/** @override */
+Sk.builtin.none.prototype["$r"] = function () {
+  return new Sk.builtin.str("None");
+};
+
+/** @override */
+Sk.builtin.none.prototype.tp$hash = function () {
+  return new Sk.builtin.int_(0);
+};
+
+/**
+ * Python None constant.
+ * @type {Sk.builtin.none}
+ */
+Sk.builtin.none.none$ = new Sk.builtin.none();
+
+/**
+ * @constructor
+ * Sk.builtin.NotImplemented
+ *
+ * @extends {Sk.builtin.object}
+ */
+Sk.builtin.NotImplemented = function () {};
+Sk.abstr.setUpInheritance("NotImplementedType", Sk.builtin.NotImplemented, Sk.builtin.object);
+
+/** @override */
+Sk.builtin.NotImplemented.prototype["$r"] = function () {
+  return new Sk.builtin.str("NotImplemented");
+};
+
+/**
+ * Python NotImplemented constant.
+ * @type {Sk.builtin.NotImplemented}
+ */
+Sk.builtin.NotImplemented.NotImplemented$ = new Sk.builtin.NotImplemented();
+goog.exportSymbol("Sk.builtin.none", Sk.builtin.none);
+goog.exportSymbol("Sk.builtin.NotImplemented", Sk.builtin.NotImplemented);
+
+/* ---- /Users/rob/skulpty/lib/../node_modules/skulpt/src/function.js ---- */
+
+/**
+ * @namespace Sk.builtin
+ */
+
+/**
+ * Check arguments to Python functions to ensure the correct number of
+ * arguments are passed.
+ *
+ * @param {string} name the name of the function
+ * @param {Object} args the args passed to the function
+ * @param {number} minargs the minimum number of allowable arguments
+ * @param {number=} maxargs optional maximum number of allowable
+ * arguments (default: Infinity)
+ * @param {boolean=} kwargs optional true if kwargs, false otherwise
+ * (default: false)
+ * @param {boolean=} free optional true if free vars, false otherwise
+ * (default: false)
+ */
+Sk.builtin.pyCheckArgs = function (name, args, minargs, maxargs, kwargs, free) {
+  var nargs = args.length;
+  var msg = "";
+  if (maxargs === undefined) {
+    maxargs = Infinity;
+  }
+  if (kwargs) {
+    nargs -= 1;
+  }
+  if (free) {
+    nargs -= 1;
+  }
+  if (nargs < minargs || nargs > maxargs) {
+    if (minargs === maxargs) {
+      msg = name + "() takes exactly " + minargs + " arguments";
+    } else if (nargs < minargs) {
+      msg = name + "() takes at least " + minargs + " arguments";
+    } else {
+      msg = name + "() takes at most " + maxargs + " arguments";
+    }
+    msg += " (" + nargs + " given)";
+    throw new Sk.builtin.TypeError(msg);
+  }
+};
+goog.exportSymbol("Sk.builtin.pyCheckArgs", Sk.builtin.pyCheckArgs);
+
+/**
+ * Check type of argument to Python functions.
+ *
+ * @param {string} name the name of the argument
+ * @param {string} exptype string of the expected type name
+ * @param {boolean} check truthy if type check passes, falsy otherwise
+ */
+Sk.builtin.pyCheckType = function (name, exptype, check) {
+  if (!check) {
+    throw new Sk.builtin.TypeError(name + " must be a " + exptype);
+  }
+};
+goog.exportSymbol("Sk.builtin.pyCheckType", Sk.builtin.pyCheckType);
+Sk.builtin.checkSequence = function (arg) {
+  return arg !== null && arg.mp$subscript !== undefined;
+};
+goog.exportSymbol("Sk.builtin.checkSequence", Sk.builtin.checkSequence);
+
+/**
+ * Use this to test whether or not a Python object is iterable.  You should **not** rely
+ * on the presence of tp$iter on the object as a good test, as it could be a user defined
+ * class with `__iter__` defined or ``__getitem__``  This tests for all of those cases
+ *
+ * @param arg {Object}   A Python object
+ * @returns {boolean} true if the object is iterable
+ */
+Sk.builtin.checkIterable = function (arg) {
+  var ret = false;
+  if (arg !== null) {
+    try {
+      ret = Sk.abstr.iter(arg);
+      if (ret) {
+        return true;
+      } else {
+        return false;
+      }
+    } catch (e) {
+      if (e instanceof Sk.builtin.TypeError) {
+        return false;
+      } else {
+        throw e;
+      }
+    }
+  }
+  return ret;
+};
+goog.exportSymbol("Sk.builtin.checkIterable", Sk.builtin.checkIterable);
+Sk.builtin.checkCallable = function (obj) {
+  // takes care of builtin functions and methods, builtins
+  if (typeof obj === "function") {
+    return true;
+  }
+  // takes care of python function, methods and lambdas
+  if (obj instanceof Sk.builtin.func) {
+    return true;
+  }
+  // takes care of instances of methods
+  if (obj instanceof Sk.builtin.method) {
+    return true;
+  }
+  // go up the prototype chain to see if the class has a __call__ method
+  if (Sk.abstr.lookupSpecial(obj, "__call__") !== undefined) {
+    return true;
+  }
+  return false;
+};
+Sk.builtin.checkNumber = function (arg) {
+  return arg !== null && (typeof arg === "number" || arg instanceof Sk.builtin.int_ || arg instanceof Sk.builtin.float_ || arg instanceof Sk.builtin.lng);
+};
+goog.exportSymbol("Sk.builtin.checkNumber", Sk.builtin.checkNumber);
+
+/**
+ * Checks for complex type, delegates to internal method
+ * Most skulpt users would search here!
+ */
+Sk.builtin.checkComplex = function (arg) {
+  return Sk.builtin.complex._complex_check(arg);
+};
+goog.exportSymbol("Sk.builtin.checkComplex", Sk.builtin.checkComplex);
+Sk.builtin.checkInt = function (arg) {
+  return arg !== null && (typeof arg === "number" && arg === (arg | 0) || arg instanceof Sk.builtin.int_ || arg instanceof Sk.builtin.lng);
+};
+goog.exportSymbol("Sk.builtin.checkInt", Sk.builtin.checkInt);
+Sk.builtin.checkFloat = function (arg) {
+  return arg !== null && arg instanceof Sk.builtin.float_;
+};
+goog.exportSymbol("Sk.builtin.checkFloat", Sk.builtin.checkFloat);
+Sk.builtin.checkString = function (arg) {
+  return arg !== null && arg.__class__ == Sk.builtin.str;
+};
+goog.exportSymbol("Sk.builtin.checkString", Sk.builtin.checkString);
+Sk.builtin.checkClass = function (arg) {
+  return arg !== null && arg.sk$type;
+};
+goog.exportSymbol("Sk.builtin.checkClass", Sk.builtin.checkClass);
+Sk.builtin.checkBool = function (arg) {
+  return arg instanceof Sk.builtin.bool;
+};
+goog.exportSymbol("Sk.builtin.checkBool", Sk.builtin.checkBool);
+Sk.builtin.checkNone = function (arg) {
+  return arg instanceof Sk.builtin.none;
+};
+goog.exportSymbol("Sk.builtin.checkNone", Sk.builtin.checkNone);
+Sk.builtin.checkFunction = function (arg) {
+  return arg !== null && arg.tp$call !== undefined;
+};
+goog.exportSymbol("Sk.builtin.checkFunction", Sk.builtin.checkFunction);
+
+/**
+ * @constructor
+ * Sk.builtin.func
+ *
+ * @description
+ * This function converts a Javascript function into a Python object that is callable.  Or just
+ * think of it as a Python function rather than a Javascript function now.  This is an important
+ * distinction in skulpt because once you have Python function you cannot just call it.
+ * You must now use Sk.misceval.callsim to call the Python function.
+ *
+ * @param {Function} code the javascript implementation of this function
+ * @param {Object=} globals the globals where this function was defined.
+ * Can be undefined (which will be stored as null) for builtins. (is
+ * that ok?)
+ * @param {Object=} closure dict of free variables
+ * @param {Object=} closure2 another dict of free variables that will be
+ * merged into 'closure'. there's 2 to simplify generated code (one is $free,
+ * the other is $cell)
+ *
+ * closure is the cell variables from the parent scope that we need to close
+ * over. closure2 is the free variables in the parent scope that we also might
+ * need to access.
+ *
+ * NOTE: co_varnames and co_name are defined by compiled code only, so we have
+ * to access them via dict-style lookup for closure.
+ *
+ */
+Sk.builtin.func = function (code, globals, closure, closure2) {
+  var k;
+  this.func_code = code;
+  this.func_globals = globals || null;
+  if (closure2 !== undefined) {
+    // todo; confirm that modification here can't cause problems
+    for (k in closure2) {
+      closure[k] = closure2[k];
+    }
+  }
+  this.func_closure = closure;
+  return this;
+};
+goog.exportSymbol("Sk.builtin.func", Sk.builtin.func);
+Sk.builtin.func.prototype.tp$name = "function";
+Sk.builtin.func.prototype.tp$descr_get = function (obj, objtype) {
+  goog.asserts.assert(obj !== undefined && objtype !== undefined);
+  if (obj === Sk.builtin.none.none$) {
+    return this;
+  }
+  return new Sk.builtin.method(this, obj, objtype);
+};
+Sk.builtin.func.prototype.tp$call = function (args, kw) {
+  var j;
+  var i;
+  var numvarnames;
+  var varnames;
+  var kwlen;
+  var kwargsarr;
+  var expectskw;
+  var name;
+  var numargs;
+  expectskw = this.func_code["co_kwargs"];
+  kwargsarr = [];
+  if (this.func_code["no_kw"] && kw) {
+    name = this.func_code && this.func_code["co_name"] && this.func_code["co_name"].v || "<native JS>";
+    throw new Sk.builtin.TypeError(name + "() takes no keyword arguments");
+  }
+  if (kw) {
+    // bind the kw args
+    kwlen = kw.length;
+    varnames = this.func_code["co_varnames"];
+    numvarnames = varnames && varnames.length;
+    for (i = 0; i < kwlen; i += 2) {
+      // todo; make this a dict mapping name to offset
+      for (j = 0; j < numvarnames; ++j) {
+        if (kw[i] === varnames[j]) {
+          break;
+        }
+      }
+      if (varnames && j !== numvarnames) {
+        if (j in args) {
+          name = this.func_code && this.func_code["co_name"] && this.func_code["co_name"].v || "<native JS>";
+          throw new Sk.builtin.TypeError(name + "() got multiple values for keyword argument '" + kw[i] + "'");
+        }
+        args[j] = kw[i + 1];
+      } else if (expectskw) {
+        // build kwargs dict
+        kwargsarr.push(new Sk.builtin.str(kw[i]));
+        kwargsarr.push(kw[i + 1]);
+      } else {
+        name = this.func_code && this.func_code["co_name"] && this.func_code["co_name"].v || "<native JS>";
+        throw new Sk.builtin.TypeError(name + "() got an unexpected keyword argument '" + kw[i] + "'");
+      }
+    }
+  }
+  if (this.func_closure) {
+    // todo; OK to modify?
+    if (this.func_code["co_varnames"]) {
+      // Make sure all default arguments are in args before adding closure
+      numargs = args.length;
+      numvarnames = this.func_code["co_varnames"].length;
+      for (i = numargs; i < numvarnames; i++) {
+        args.push(undefined);
+      }
+    }
+    args.push(this.func_closure);
+  }
+  if (expectskw) {
+    args.unshift(kwargsarr);
+  }
+
+  //print(JSON.stringify(args, null, 2));
+
+  // note: functions expect 'this' to be globals to avoid having to
+  // slice/unshift onto the main args
+  return this.func_code.apply(this.func_globals, args);
+};
+Sk.builtin.func.prototype.tp$getattr = function (key) {
+  return this[key];
+};
+Sk.builtin.func.prototype.tp$setattr = function (key, value) {
+  this[key] = value;
+};
+
+//todo; investigate why the other doesn't work
+//Sk.builtin.type.makeIntoTypeObj('function', Sk.builtin.func);
+Sk.builtin.func.prototype.ob$type = Sk.builtin.type.makeTypeObj("function", new Sk.builtin.func(null, null));
+Sk.builtin.func.prototype["$r"] = function () {
+  var name = this.func_code && this.func_code["co_name"] && this.func_code["co_name"].v || "<native JS>";
+  return new Sk.builtin.str("<function " + name + ">");
+};
+
+/* ---- /Users/rob/skulpty/lib/../node_modules/skulpt/src/seqtype.js ---- */
+
+/**
+ * @constructor
+ * Sk.builtin.seqtype
+ *
+ * @description
+ * Abstract class for Python sequence types.
+ *
+ * @extends {Sk.builtin.object}
+ *
+ * @return {undefined} Cannot instantiate a Sk.builtin.seqtype object
+ */
+Sk.builtin.seqtype = function () {
+  throw new Sk.builtin.ExternalError("Cannot instantiate abstract Sk.builtin.seqtype class");
+};
+Sk.abstr.setUpInheritance("SequenceType", Sk.builtin.seqtype, Sk.builtin.object);
+Sk.builtin.seqtype.sk$abstract = true;
+
+/**
+ * Python wrapper of `__len__` method.
+ *
+ * @name  __len__
+ * @instance
+ * @memberOf Sk.builtin.seqtype.prototype
+ */
+Sk.builtin.seqtype.prototype["__len__"] = new Sk.builtin.func(function (self) {
+  Sk.builtin.pyCheckArgs("__len__", arguments, 0, 0, false, true);
+  return new Sk.builtin.int_(self.sq$length());
+});
+
+/**
+ * Python wrapper of `__iter__` method.
+ *
+ * @name  __iter__
+ * @instance
+ * @memberOf Sk.builtin.seqtype.prototype
+ */
+Sk.builtin.seqtype.prototype["__iter__"] = new Sk.builtin.func(function (self) {
+  Sk.builtin.pyCheckArgs("__iter__", arguments, 0, 0, false, true);
+  return self.tp$iter();
+});
+
+/**
+ * Python wrapper of `__contains__` method.
+ *
+ * @name  __contains__
+ * @instance
+ * @memberOf Sk.builtin.seqtype.prototype
+ */
+Sk.builtin.seqtype.prototype["__contains__"] = new Sk.builtin.func(function (self, item) {
+  Sk.builtin.pyCheckArgs("__contains__", arguments, 1, 1, false, true);
+  if (self.sq$contains(item)) {
+    return Sk.builtin.bool.true$;
+  } else {
+    return Sk.builtin.bool.false$;
+  }
+});
+
+/**
+ * Python wrapper of `__getitem__` method.
+ *
+ * @name  __getitem__
+ * @instance
+ * @memberOf Sk.builtin.seqtype.prototype
+ */
+Sk.builtin.seqtype.prototype["__getitem__"] = new Sk.builtin.func(function (self, key) {
+  Sk.builtin.pyCheckArgs("__getitem__", arguments, 1, 1, false, true);
+  return self.mp$subscript(key);
+});
+
+/**
+ * Python wrapper of `__add__` method.
+ *
+ * @name  __add__
+ * @instance
+ * @memberOf Sk.builtin.seqtype.prototype
+ */
+Sk.builtin.seqtype.prototype["__add__"] = new Sk.builtin.func(function (self, other) {
+  Sk.builtin.pyCheckArgs("__add__", arguments, 1, 1, false, true);
+  return self.sq$concat(other);
+});
+
+/**
+ * Python wrapper of `__mul__` method.
+ *
+ * @name  __mul__
+ * @instance
+ * @memberOf Sk.builtin.seqtype.prototype
+ */
+Sk.builtin.seqtype.prototype["__mul__"] = new Sk.builtin.func(function (self, n) {
+  Sk.builtin.pyCheckArgs("__mul__", arguments, 1, 1, false, true);
+  if (!Sk.misceval.isIndex(n)) {
+    throw new Sk.builtin.TypeError("can't multiply sequence by non-int of type '" + Sk.abstr.typeName(n) + "'");
+  }
+  return self.sq$repeat(n);
+});
+
+/**
+ * Python wrapper of `__rmul__` method.
+ *
+ * @name  __rmul__
+ * @instance
+ * @memberOf Sk.builtin.seqtype.prototype
+ */
+Sk.builtin.seqtype.prototype["__rmul__"] = new Sk.builtin.func(function (self, n) {
+  Sk.builtin.pyCheckArgs("__rmul__", arguments, 1, 1, false, true);
+  return self.sq$repeat(n);
+});
+
+/* ---- /Users/rob/skulpty/lib/../node_modules/skulpt/src/str.js ---- */
+
+Sk.builtin.interned = {};
+
+/**
+ * @constructor
+ * @param {*} x
+ * @extends Sk.builtin.object
+ */
+Sk.builtin.str = function (x) {
+  var ret;
+  if (x === undefined) {
+    x = "";
+  }
+  if (x instanceof Sk.builtin.str) {
+    return x;
+  }
+  if (!(this instanceof Sk.builtin.str)) {
+    return new Sk.builtin.str(x);
+  }
+
+  // convert to js string
+  if (x === true) {
+    ret = "True";
+  } else if (x === false) {
+    ret = "False";
+  } else if (x === null || x instanceof Sk.builtin.none) {
+    ret = "None";
+  } else if (x instanceof Sk.builtin.bool) {
+    if (x.v) {
+      ret = "True";
+    } else {
+      ret = "False";
+    }
+  } else if (typeof x === "number") {
+    ret = x.toString();
+    if (ret === "Infinity") {
+      ret = "inf";
+    } else if (ret === "-Infinity") {
+      ret = "-inf";
+    }
+  } else if (typeof x === "string") {
+    ret = x;
+  } else if (x.tp$str !== undefined) {
+    ret = x.tp$str();
+    if (!(ret instanceof Sk.builtin.str)) {
+      throw new Sk.builtin.ValueError("__str__ didn't return a str");
+    }
+    return ret;
+  } else {
+    return Sk.misceval.objectRepr(x);
+  }
+
+  // interning required for strings in py
+  if (Sk.builtin.interned["1" + ret]) {
+    return Sk.builtin.interned["1" + ret];
+  }
+  this.__class__ = Sk.builtin.str;
+  this.v = ret;
+  this["v"] = this.v;
+  Sk.builtin.interned["1" + ret] = this;
+  return this;
+};
+goog.exportSymbol("Sk.builtin.str", Sk.builtin.str);
+Sk.abstr.setUpInheritance("str", Sk.builtin.str, Sk.builtin.seqtype);
+Sk.builtin.str.prototype.mp$subscript = function (index) {
+  var ret;
+  if (Sk.misceval.isIndex(index)) {
+    index = Sk.misceval.asIndex(index);
+    if (index < 0) {
+      index = this.v.length + index;
+    }
+    if (index < 0 || index >= this.v.length) {
+      throw new Sk.builtin.IndexError("string index out of range");
+    }
+    return new Sk.builtin.str(this.v.charAt(index));
+  } else if (index instanceof Sk.builtin.slice) {
+    ret = "";
+    index.sssiter$(this, function (i, wrt) {
+      if (i >= 0 && i < wrt.v.length) {
+        ret += wrt.v.charAt(i);
+      }
+    });
+    return new Sk.builtin.str(ret);
+  } else {
+    throw new Sk.builtin.TypeError("string indices must be integers, not " + Sk.abstr.typeName(index));
+  }
+};
+Sk.builtin.str.prototype.sq$length = function () {
+  return this.v.length;
+};
+Sk.builtin.str.prototype.sq$concat = function (other) {
+  var otypename;
+  if (!other || !Sk.builtin.checkString(other)) {
+    otypename = Sk.abstr.typeName(other);
+    throw new Sk.builtin.TypeError("cannot concatenate 'str' and '" + otypename + "' objects");
+  }
+  return new Sk.builtin.str(this.v + other.v);
+};
+Sk.builtin.str.prototype.nb$add = Sk.builtin.str.prototype.sq$concat;
+Sk.builtin.str.prototype.nb$inplace_add = Sk.builtin.str.prototype.sq$concat;
+Sk.builtin.str.prototype.sq$repeat = function (n) {
+  var i;
+  var ret;
+  if (!Sk.misceval.isIndex(n)) {
+    throw new Sk.builtin.TypeError("can't multiply sequence by non-int of type '" + Sk.abstr.typeName(n) + "'");
+  }
+  n = Sk.misceval.asIndex(n);
+  ret = "";
+  for (i = 0; i < n; ++i) {
+    ret += this.v;
+  }
+  return new Sk.builtin.str(ret);
+};
+Sk.builtin.str.prototype.nb$multiply = Sk.builtin.str.prototype.sq$repeat;
+Sk.builtin.str.prototype.nb$inplace_multiply = Sk.builtin.str.prototype.sq$repeat;
+Sk.builtin.str.prototype.sq$item = function () {
+  goog.asserts.fail();
+};
+Sk.builtin.str.prototype.sq$slice = function (i1, i2) {
+  i1 = Sk.builtin.asnum$(i1);
+  i2 = Sk.builtin.asnum$(i2);
+  if (i1 < 0) {
+    i1 = 0;
+  }
+  return new Sk.builtin.str(this.v.substr(i1, i2 - i1));
+};
+Sk.builtin.str.prototype.sq$contains = function (ob) {
+  if (!(ob instanceof Sk.builtin.str)) {
+    throw new Sk.builtin.TypeError("TypeError: 'In <string> requires string as left operand");
+  }
+  return this.v.indexOf(ob.v) != -1;
+};
+Sk.builtin.str.prototype.__iter__ = new Sk.builtin.func(function (self) {
+  return new Sk.builtin.str_iter_(self);
+});
+Sk.builtin.str.prototype.tp$iter = function () {
+  return new Sk.builtin.str_iter_(this);
+};
+Sk.builtin.str.prototype.tp$richcompare = function (other, op) {
+  if (!(other instanceof Sk.builtin.str)) {
+    return undefined;
+  }
+  switch (op) {
+    case "Lt":
+      return this.v < other.v;
+    case "LtE":
+      return this.v <= other.v;
+    case "Eq":
+      return this.v === other.v;
+    case "NotEq":
+      return this.v !== other.v;
+    case "Gt":
+      return this.v > other.v;
+    case "GtE":
+      return this.v >= other.v;
+    default:
+      goog.asserts.fail();
+  }
+};
+Sk.builtin.str.prototype["$r"] = function () {
+  // single is preferred
+  var ashex;
+  var c;
+  var i;
+  var ret;
+  var len;
+  var quote = "'";
+  //jshint ignore:start
+  if (this.v.indexOf("'") !== -1 && this.v.indexOf('"') === -1) {
+    quote = '"';
+  }
+  //jshint ignore:end
+  len = this.v.length;
+  ret = quote;
+  for (i = 0; i < len; ++i) {
+    c = this.v.charAt(i);
+    if (c === quote || c === "\\") {
+      ret += "\\" + c;
+    } else if (c === "\t") {
+      ret += "\\t";
+    } else if (c === "\n") {
+      ret += "\\n";
+    } else if (c === "\r") {
+      ret += "\\r";
+    } else if (c < " " || c >= 0x7f) {
+      ashex = c.charCodeAt(0).toString(16);
+      if (ashex.length < 2) {
+        ashex = "0" + ashex;
+      }
+      ret += "\\x" + ashex;
+    } else {
+      ret += c;
+    }
+  }
+  ret += quote;
+  return new Sk.builtin.str(ret);
+};
+Sk.builtin.str.re_escape_ = function (s) {
+  var c;
+  var i;
+  var ret = [];
+  var re = /^[A-Za-z0-9]+$/;
+  for (i = 0; i < s.length; ++i) {
+    c = s.charAt(i);
+    if (re.test(c)) {
+      ret.push(c);
+    } else {
+      if (c === "\\000") {
+        ret.push("\\000");
+      } else {
+        ret.push("\\" + c);
+      }
+    }
+  }
+  return ret.join("");
+};
+Sk.builtin.str.prototype["lower"] = new Sk.builtin.func(function (self) {
+  Sk.builtin.pyCheckArgs("lower", arguments, 1, 1);
+  return new Sk.builtin.str(self.v.toLowerCase());
+});
+Sk.builtin.str.prototype["upper"] = new Sk.builtin.func(function (self) {
+  Sk.builtin.pyCheckArgs("upper", arguments, 1, 1);
+  return new Sk.builtin.str(self.v.toUpperCase());
+});
+Sk.builtin.str.prototype["capitalize"] = new Sk.builtin.func(function (self) {
+  var i;
+  var cap;
+  var orig;
+  Sk.builtin.pyCheckArgs("capitalize", arguments, 1, 1);
+  orig = self.v;
+  if (orig.length === 0) {
+    return new Sk.builtin.str("");
+  }
+  cap = orig.charAt(0).toUpperCase();
+  for (i = 1; i < orig.length; i++) {
+    cap += orig.charAt(i).toLowerCase();
+  }
+  return new Sk.builtin.str(cap);
+});
+Sk.builtin.str.prototype["join"] = new Sk.builtin.func(function (self, seq) {
+  var it, i;
+  var arrOfStrs;
+  Sk.builtin.pyCheckArgs("join", arguments, 2, 2);
+  Sk.builtin.pyCheckType("seq", "iterable", Sk.builtin.checkIterable(seq));
+  arrOfStrs = [];
+  for (it = seq.tp$iter(), i = it.tp$iternext(); i !== undefined; i = it.tp$iternext()) {
+    if (i.constructor !== Sk.builtin.str) {
+      throw new Sk.builtin.TypeError("TypeError: sequence item " + arrOfStrs.length + ": expected string, " + typeof i + " found");
+    }
+    arrOfStrs.push(i.v);
+  }
+  return new Sk.builtin.str(arrOfStrs.join(self.v));
+});
+Sk.builtin.str.prototype["split"] = new Sk.builtin.func(function (self, on, howmany) {
+  var splits;
+  var index;
+  var match;
+  var result;
+  var s;
+  var str;
+  var regex;
+  Sk.builtin.pyCheckArgs("split", arguments, 1, 3);
+  if (on === undefined || on instanceof Sk.builtin.none) {
+    on = null;
+  }
+  if (on !== null && !Sk.builtin.checkString(on)) {
+    throw new Sk.builtin.TypeError("expected a string");
+  }
+  if (on !== null && on.v === "") {
+    throw new Sk.builtin.ValueError("empty separator");
+  }
+  if (howmany !== undefined && !Sk.builtin.checkInt(howmany)) {
+    throw new Sk.builtin.TypeError("an integer is required");
+  }
+  howmany = Sk.builtin.asnum$(howmany);
+  regex = /[\s]+/g;
+  str = self.v;
+  if (on === null) {
+    str = goog.string.trimLeft(str);
+  } else {
+    // Escape special characters in "on" so we can use a regexp
+    s = on.v.replace(/([.*+?=|\\\/()\[\]\{\}^$])/g, "\\$1");
+    regex = new RegExp(s, "g");
+  }
+
+  // This is almost identical to re.split,
+  // except how the regexp is constructed
+
+  result = [];
+  index = 0;
+  splits = 0;
+  while ((match = regex.exec(str)) != null) {
+    if (match.index === regex.lastIndex) {
+      // empty match
+      break;
+    }
+    result.push(new Sk.builtin.str(str.substring(index, match.index)));
+    index = regex.lastIndex;
+    splits += 1;
+    if (howmany && splits >= howmany) {
+      break;
+    }
+  }
+  str = str.substring(index);
+  if (on !== null || str.length > 0) {
+    result.push(new Sk.builtin.str(str));
+  }
+  return new Sk.builtin.list(result);
+});
+Sk.builtin.str.prototype["strip"] = new Sk.builtin.func(function (self, chars) {
+  var regex;
+  var pattern;
+  Sk.builtin.pyCheckArgs("strip", arguments, 1, 2);
+  if (chars !== undefined && !Sk.builtin.checkString(chars)) {
+    throw new Sk.builtin.TypeError("strip arg must be None or str");
+  }
+  if (chars === undefined) {
+    pattern = /^\s+|\s+$/g;
+  } else {
+    regex = Sk.builtin.str.re_escape_(chars.v);
+    pattern = new RegExp("^[" + regex + "]+|[" + regex + "]+$", "g");
+  }
+  return new Sk.builtin.str(self.v.replace(pattern, ""));
+});
+Sk.builtin.str.prototype["lstrip"] = new Sk.builtin.func(function (self, chars) {
+  var regex;
+  var pattern;
+  Sk.builtin.pyCheckArgs("lstrip", arguments, 1, 2);
+  if (chars !== undefined && !Sk.builtin.checkString(chars)) {
+    throw new Sk.builtin.TypeError("lstrip arg must be None or str");
+  }
+  if (chars === undefined) {
+    pattern = /^\s+/g;
+  } else {
+    regex = Sk.builtin.str.re_escape_(chars.v);
+    pattern = new RegExp("^[" + regex + "]+", "g");
+  }
+  return new Sk.builtin.str(self.v.replace(pattern, ""));
+});
+Sk.builtin.str.prototype["rstrip"] = new Sk.builtin.func(function (self, chars) {
+  var regex;
+  var pattern;
+  Sk.builtin.pyCheckArgs("rstrip", arguments, 1, 2);
+  if (chars !== undefined && !Sk.builtin.checkString(chars)) {
+    throw new Sk.builtin.TypeError("rstrip arg must be None or str");
+  }
+  if (chars === undefined) {
+    pattern = /\s+$/g;
+  } else {
+    regex = Sk.builtin.str.re_escape_(chars.v);
+    pattern = new RegExp("[" + regex + "]+$", "g");
+  }
+  return new Sk.builtin.str(self.v.replace(pattern, ""));
+});
+Sk.builtin.str.prototype["partition"] = new Sk.builtin.func(function (self, sep) {
+  var pos;
+  var sepStr;
+  Sk.builtin.pyCheckArgs("partition", arguments, 2, 2);
+  Sk.builtin.pyCheckType("sep", "string", Sk.builtin.checkString(sep));
+  sepStr = new Sk.builtin.str(sep);
+  pos = self.v.indexOf(sepStr.v);
+  if (pos < 0) {
+    return new Sk.builtin.tuple([self, Sk.builtin.str.$emptystr, Sk.builtin.str.$emptystr]);
+  }
+  return new Sk.builtin.tuple([new Sk.builtin.str(self.v.substring(0, pos)), sepStr, new Sk.builtin.str(self.v.substring(pos + sepStr.v.length))]);
+});
+Sk.builtin.str.prototype["rpartition"] = new Sk.builtin.func(function (self, sep) {
+  var pos;
+  var sepStr;
+  Sk.builtin.pyCheckArgs("rpartition", arguments, 2, 2);
+  Sk.builtin.pyCheckType("sep", "string", Sk.builtin.checkString(sep));
+  sepStr = new Sk.builtin.str(sep);
+  pos = self.v.lastIndexOf(sepStr.v);
+  if (pos < 0) {
+    return new Sk.builtin.tuple([Sk.builtin.str.$emptystr, Sk.builtin.str.$emptystr, self]);
+  }
+  return new Sk.builtin.tuple([new Sk.builtin.str(self.v.substring(0, pos)), sepStr, new Sk.builtin.str(self.v.substring(pos + sepStr.v.length))]);
+});
+Sk.builtin.str.prototype["count"] = new Sk.builtin.func(function (self, pat, start, end) {
+  var normaltext;
+  var ctl;
+  var slice;
+  var m;
+  Sk.builtin.pyCheckArgs("count", arguments, 2, 4);
+  if (!Sk.builtin.checkString(pat)) {
+    throw new Sk.builtin.TypeError("expected a character buffer object");
+  }
+  if (start !== undefined && !Sk.builtin.checkInt(start)) {
+    throw new Sk.builtin.TypeError("slice indices must be integers or None or have an __index__ method");
+  }
+  if (end !== undefined && !Sk.builtin.checkInt(end)) {
+    throw new Sk.builtin.TypeError("slice indices must be integers or None or have an __index__ method");
+  }
+  if (start === undefined) {
+    start = 0;
+  } else {
+    start = Sk.builtin.asnum$(start);
+    start = start >= 0 ? start : self.v.length + start;
+  }
+  if (end === undefined) {
+    end = self.v.length;
+  } else {
+    end = Sk.builtin.asnum$(end);
+    end = end >= 0 ? end : self.v.length + end;
+  }
+  normaltext = pat.v.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, "\\$&");
+  m = new RegExp(normaltext, "g");
+  slice = self.v.slice(start, end);
+  ctl = slice.match(m);
+  if (!ctl) {
+    return new Sk.builtin.int_(0);
+  } else {
+    return new Sk.builtin.int_(ctl.length);
+  }
+});
+Sk.builtin.str.prototype["ljust"] = new Sk.builtin.func(function (self, len, fillchar) {
+  var newstr;
+  Sk.builtin.pyCheckArgs("ljust", arguments, 2, 3);
+  if (!Sk.builtin.checkInt(len)) {
+    throw new Sk.builtin.TypeError("integer argument exepcted, got " + Sk.abstr.typeName(len));
+  }
+  if (fillchar !== undefined && (!Sk.builtin.checkString(fillchar) || fillchar.v.length !== 1)) {
+    throw new Sk.builtin.TypeError("must be char, not " + Sk.abstr.typeName(fillchar));
+  }
+  if (fillchar === undefined) {
+    fillchar = " ";
+  } else {
+    fillchar = fillchar.v;
+  }
+  len = Sk.builtin.asnum$(len);
+  if (self.v.length >= len) {
+    return self;
+  } else {
+    newstr = Array.prototype.join.call({
+      length: Math.floor(len - self.v.length) + 1
+    }, fillchar);
+    return new Sk.builtin.str(self.v + newstr);
+  }
+});
+Sk.builtin.str.prototype["rjust"] = new Sk.builtin.func(function (self, len, fillchar) {
+  var newstr;
+  Sk.builtin.pyCheckArgs("rjust", arguments, 2, 3);
+  if (!Sk.builtin.checkInt(len)) {
+    throw new Sk.builtin.TypeError("integer argument exepcted, got " + Sk.abstr.typeName(len));
+  }
+  if (fillchar !== undefined && (!Sk.builtin.checkString(fillchar) || fillchar.v.length !== 1)) {
+    throw new Sk.builtin.TypeError("must be char, not " + Sk.abstr.typeName(fillchar));
+  }
+  if (fillchar === undefined) {
+    fillchar = " ";
+  } else {
+    fillchar = fillchar.v;
+  }
+  len = Sk.builtin.asnum$(len);
+  if (self.v.length >= len) {
+    return self;
+  } else {
+    newstr = Array.prototype.join.call({
+      length: Math.floor(len - self.v.length) + 1
+    }, fillchar);
+    return new Sk.builtin.str(newstr + self.v);
+  }
+});
+Sk.builtin.str.prototype["center"] = new Sk.builtin.func(function (self, len, fillchar) {
+  var newstr;
+  var newstr1;
+  Sk.builtin.pyCheckArgs("center", arguments, 2, 3);
+  if (!Sk.builtin.checkInt(len)) {
+    throw new Sk.builtin.TypeError("integer argument exepcted, got " + Sk.abstr.typeName(len));
+  }
+  if (fillchar !== undefined && (!Sk.builtin.checkString(fillchar) || fillchar.v.length !== 1)) {
+    throw new Sk.builtin.TypeError("must be char, not " + Sk.abstr.typeName(fillchar));
+  }
+  if (fillchar === undefined) {
+    fillchar = " ";
+  } else {
+    fillchar = fillchar.v;
+  }
+  len = Sk.builtin.asnum$(len);
+  if (self.v.length >= len) {
+    return self;
+  } else {
+    newstr1 = Array.prototype.join.call({
+      length: Math.floor((len - self.v.length) / 2) + 1
+    }, fillchar);
+    newstr = newstr1 + self.v + newstr1;
+    if (newstr.length < len) {
+      newstr = newstr + fillchar;
+    }
+    return new Sk.builtin.str(newstr);
+  }
+});
+Sk.builtin.str.prototype["find"] = new Sk.builtin.func(function (self, tgt, start, end) {
+  var idx;
+  Sk.builtin.pyCheckArgs("find", arguments, 2, 4);
+  if (!Sk.builtin.checkString(tgt)) {
+    throw new Sk.builtin.TypeError("expected a character buffer object");
+  }
+  if (start !== undefined && !Sk.builtin.checkInt(start)) {
+    throw new Sk.builtin.TypeError("slice indices must be integers or None or have an __index__ method");
+  }
+  if (end !== undefined && !Sk.builtin.checkInt(end)) {
+    throw new Sk.builtin.TypeError("slice indices must be integers or None or have an __index__ method");
+  }
+  if (start === undefined) {
+    start = 0;
+  } else {
+    start = Sk.builtin.asnum$(start);
+    start = start >= 0 ? start : self.v.length + start;
+  }
+  if (end === undefined) {
+    end = self.v.length;
+  } else {
+    end = Sk.builtin.asnum$(end);
+    end = end >= 0 ? end : self.v.length + end;
+  }
+  idx = self.v.indexOf(tgt.v, start);
+  idx = idx >= start && idx < end ? idx : -1;
+  return new Sk.builtin.int_(idx);
+});
+Sk.builtin.str.prototype["index"] = new Sk.builtin.func(function (self, tgt, start, end) {
+  var idx;
+  Sk.builtin.pyCheckArgs("index", arguments, 2, 4);
+  idx = Sk.misceval.callsim(self["find"], self, tgt, start, end);
+  if (Sk.builtin.asnum$(idx) === -1) {
+    throw new Sk.builtin.ValueError("substring not found");
+  }
+  return idx;
+});
+Sk.builtin.str.prototype["rfind"] = new Sk.builtin.func(function (self, tgt, start, end) {
+  var idx;
+  Sk.builtin.pyCheckArgs("rfind", arguments, 2, 4);
+  if (!Sk.builtin.checkString(tgt)) {
+    throw new Sk.builtin.TypeError("expected a character buffer object");
+  }
+  if (start !== undefined && !Sk.builtin.checkInt(start)) {
+    throw new Sk.builtin.TypeError("slice indices must be integers or None or have an __index__ method");
+  }
+  if (end !== undefined && !Sk.builtin.checkInt(end)) {
+    throw new Sk.builtin.TypeError("slice indices must be integers or None or have an __index__ method");
+  }
+  if (start === undefined) {
+    start = 0;
+  } else {
+    start = Sk.builtin.asnum$(start);
+    start = start >= 0 ? start : self.v.length + start;
+  }
+  if (end === undefined) {
+    end = self.v.length;
+  } else {
+    end = Sk.builtin.asnum$(end);
+    end = end >= 0 ? end : self.v.length + end;
+  }
+  idx = self.v.lastIndexOf(tgt.v, end);
+  idx = idx !== end ? idx : self.v.lastIndexOf(tgt.v, end - 1);
+  idx = idx >= start && idx < end ? idx : -1;
+  return new Sk.builtin.int_(idx);
+});
+Sk.builtin.str.prototype["rindex"] = new Sk.builtin.func(function (self, tgt, start, end) {
+  var idx;
+  Sk.builtin.pyCheckArgs("rindex", arguments, 2, 4);
+  idx = Sk.misceval.callsim(self["rfind"], self, tgt, start, end);
+  if (Sk.builtin.asnum$(idx) === -1) {
+    throw new Sk.builtin.ValueError("substring not found");
+  }
+  return idx;
+});
+Sk.builtin.str.prototype["startswith"] = new Sk.builtin.func(function (self, tgt) {
+  Sk.builtin.pyCheckArgs("startswith", arguments, 2, 2);
+  Sk.builtin.pyCheckType("tgt", "string", Sk.builtin.checkString(tgt));
+  return new Sk.builtin.bool(self.v.indexOf(tgt.v) === 0);
+});
+
+// http://stackoverflow.com/questions/280634/endswith-in-javascript
+Sk.builtin.str.prototype["endswith"] = new Sk.builtin.func(function (self, tgt) {
+  Sk.builtin.pyCheckArgs("endswith", arguments, 2, 2);
+  Sk.builtin.pyCheckType("tgt", "string", Sk.builtin.checkString(tgt));
+  return new Sk.builtin.bool(self.v.indexOf(tgt.v, self.v.length - tgt.v.length) !== -1);
+});
+Sk.builtin.str.prototype["replace"] = new Sk.builtin.func(function (self, oldS, newS, count) {
+  var c;
+  var patt;
+  Sk.builtin.pyCheckArgs("replace", arguments, 3, 4);
+  Sk.builtin.pyCheckType("oldS", "string", Sk.builtin.checkString(oldS));
+  Sk.builtin.pyCheckType("newS", "string", Sk.builtin.checkString(newS));
+  if (count !== undefined && !Sk.builtin.checkInt(count)) {
+    throw new Sk.builtin.TypeError("integer argument expected, got " + Sk.abstr.typeName(count));
+  }
+  count = Sk.builtin.asnum$(count);
+  patt = new RegExp(Sk.builtin.str.re_escape_(oldS.v), "g");
+  if (count === undefined || count < 0) {
+    return new Sk.builtin.str(self.v.replace(patt, newS.v));
+  }
+  c = 0;
+  function replacer(match) {
+    c++;
+    if (c <= count) {
+      return newS.v;
+    }
+    return match;
+  }
+  return new Sk.builtin.str(self.v.replace(patt, replacer));
+});
+Sk.builtin.str.prototype["zfill"] = new Sk.builtin.func(function (self, len) {
+  var str = self.v;
+  var ret;
+  var zeroes;
+  var offset;
+  var pad = "";
+  Sk.builtin.pyCheckArgs("zfill", arguments, 2, 2);
+  if (!Sk.builtin.checkInt(len)) {
+    throw new Sk.builtin.TypeError("integer argument exepected, got " + Sk.abstr.typeName(len));
+  }
+
+  // figure out how many zeroes are needed to make the proper length
+  zeroes = len.v - str.length;
+  // offset by 1 if there is a +/- at the beginning of the string
+  offset = str[0] === "+" || str[0] === "-" ? 1 : 0;
+  for (var i = 0; i < zeroes; i++) {
+    pad += "0";
+  }
+  // combine the string and the zeroes
+  ret = str.substr(0, offset) + pad + str.substr(offset);
+  return new Sk.builtin.str(ret);
+});
+Sk.builtin.str.prototype["isdigit"] = new Sk.builtin.func(function (self) {
+  Sk.builtin.pyCheckArgs("isdigit", arguments, 1, 1);
+  return new Sk.builtin.bool(/^\d+$/.test(self.v));
+});
+Sk.builtin.str.prototype["isspace"] = new Sk.builtin.func(function (self) {
+  Sk.builtin.pyCheckArgs("isspace", arguments, 1, 1);
+  return new Sk.builtin.bool(/^\s+$/.test(self.v));
+});
+Sk.builtin.str.prototype["expandtabs"] = new Sk.builtin.func(function (self, tabsize) {
+  // var input = self.v;
+  // var expanded = "";
+  // var split;
+  // var spacestr = "";
+  // var spacerem;
+
+  var spaces;
+  var expanded;
+  Sk.builtin.pyCheckArgs("expandtabs", arguments, 1, 2);
+  if (tabsize !== undefined && !Sk.builtin.checkInt(tabsize)) {
+    throw new Sk.builtin.TypeError("integer argument exepected, got " + Sk.abstr.typeName(tabsize));
+  }
+  if (tabsize === undefined) {
+    tabsize = 8;
+  } else {
+    tabsize = Sk.builtin.asnum$(tabsize);
+  }
+  spaces = new Array(tabsize + 1).join(" ");
+  expanded = self.v.replace(/([^\r\n\t]*)\t/g, function (a, b) {
+    return b + spaces.slice(b.length % tabsize);
+  });
+  return new Sk.builtin.str(expanded);
+});
+Sk.builtin.str.prototype["swapcase"] = new Sk.builtin.func(function (self) {
+  var ret;
+  Sk.builtin.pyCheckArgs("swapcase", arguments, 1, 1);
+  ret = self.v.replace(/[a-z]/gi, function (c) {
+    var lc = c.toLowerCase();
+    return lc === c ? c.toUpperCase() : lc;
+  });
+  return new Sk.builtin.str(ret);
+});
+Sk.builtin.str.prototype["splitlines"] = new Sk.builtin.func(function (self, keepends) {
+  var data = self.v;
+  var i = 0;
+  var j = i;
+  var selflen = self.v.length;
+  var strs_w = [];
+  var ch;
+  var eol;
+  var sol = 0;
+  var slice;
+  Sk.builtin.pyCheckArgs("splitlines", arguments, 1, 2);
+  if (keepends !== undefined && !Sk.builtin.checkBool(keepends)) {
+    throw new Sk.builtin.TypeError("boolean argument expected, got " + Sk.abstr.typeName(keepends));
+  }
+  if (keepends === undefined) {
+    keepends = false;
+  } else {
+    keepends = keepends.v;
+  }
+  for (i = 0; i < selflen; i++) {
+    ch = data.charAt(i);
+    if (data.charAt(i + 1) === "\n" && ch === "\r") {
+      eol = i + 2;
+      slice = data.slice(sol, eol);
+      if (!keepends) {
+        slice = slice.replace(/(\r|\n)/g, "");
+      }
+      strs_w.push(new Sk.builtin.str(slice));
+      sol = eol;
+    } else if (ch === "\n" && data.charAt(i - 1) !== "\r" || ch === "\r") {
+      eol = i + 1;
+      slice = data.slice(sol, eol);
+      if (!keepends) {
+        slice = slice.replace(/(\r|\n)/g, "");
+      }
+      strs_w.push(new Sk.builtin.str(slice));
+      sol = eol;
+    }
+  }
+  if (sol < selflen) {
+    eol = selflen;
+    slice = data.slice(sol, eol);
+    if (!keepends) {
+      slice = slice.replace(/(\r|\n)/g, "");
+    }
+    strs_w.push(new Sk.builtin.str(slice));
+  }
+  return new Sk.builtin.list(strs_w);
+});
+Sk.builtin.str.prototype["title"] = new Sk.builtin.func(function (self) {
+  var ret;
+  Sk.builtin.pyCheckArgs("title", arguments, 1, 1);
+  ret = self.v.replace(/[a-z][a-z]*/gi, function (str) {
+    return str[0].toUpperCase() + str.substr(1).toLowerCase();
+  });
+  return new Sk.builtin.str(ret);
+});
+Sk.builtin.str.prototype["isalpha"] = new Sk.builtin.func(function (self) {
+  Sk.builtin.pyCheckArgs("isalpha", arguments, 1, 1);
+  return new Sk.builtin.bool(self.v.length && goog.string.isAlpha(self.v));
+});
+Sk.builtin.str.prototype["isalnum"] = new Sk.builtin.func(function (self) {
+  Sk.builtin.pyCheckArgs("isalnum", arguments, 1, 1);
+  return new Sk.builtin.bool(self.v.length && goog.string.isAlphaNumeric(self.v));
+});
+
+// does not account for unicode numeric values
+Sk.builtin.str.prototype["isnumeric"] = new Sk.builtin.func(function (self) {
+  Sk.builtin.pyCheckArgs("isnumeric", arguments, 1, 1);
+  return new Sk.builtin.bool(self.v.length && goog.string.isNumeric(self.v));
+});
+Sk.builtin.str.prototype["islower"] = new Sk.builtin.func(function (self) {
+  Sk.builtin.pyCheckArgs("islower", arguments, 1, 1);
+  return new Sk.builtin.bool(self.v.length && /[a-z]/.test(self.v) && !/[A-Z]/.test(self.v));
+});
+Sk.builtin.str.prototype["isupper"] = new Sk.builtin.func(function (self) {
+  Sk.builtin.pyCheckArgs("isupper", arguments, 1, 1);
+  return new Sk.builtin.bool(self.v.length && !/[a-z]/.test(self.v) && /[A-Z]/.test(self.v));
+});
+Sk.builtin.str.prototype["istitle"] = new Sk.builtin.func(function (self) {
+  // Comparing to str.title() seems the most intuitive thing, but it fails on "",
+  // Other empty-ish strings with no change.
+  var input = self.v;
+  var cased = false;
+  var previous_is_cased = false;
+  var pos;
+  var ch;
+  Sk.builtin.pyCheckArgs("istitle", arguments, 1, 1);
+  for (pos = 0; pos < input.length; pos++) {
+    ch = input.charAt(pos);
+    if (!/[a-z]/.test(ch) && /[A-Z]/.test(ch)) {
+      if (previous_is_cased) {
+        return new Sk.builtin.bool(false);
+      }
+      previous_is_cased = true;
+      cased = true;
+    } else if (/[a-z]/.test(ch) && !/[A-Z]/.test(ch)) {
+      if (!previous_is_cased) {
+        return new Sk.builtin.bool(false);
+      }
+      cased = true;
+    } else {
+      previous_is_cased = false;
+    }
+  }
+  return new Sk.builtin.bool(cased);
+});
+Sk.builtin.str.prototype.nb$remainder = function (rhs) {
+  // % format op. rhs can be a value, a tuple, or something with __getitem__ (dict)
+
+  // From http://docs.python.org/library/stdtypes.html#string-formatting the
+  // format looks like:
+  // 1. The '%' character, which marks the start of the specifier.
+  // 2. Mapping key (optional), consisting of a parenthesised sequence of characters (for example, (somename)).
+  // 3. Conversion flags (optional), which affect the result of some conversion types.
+  // 4. Minimum field width (optional). If specified as an '*' (asterisk), the actual width is read from the next
+  // element of the tuple in values, and the object to convert comes after the minimum field width and optional
+  // precision. 5. Precision (optional), given as a '.' (dot) followed by the precision. If specified as '*' (an
+  // asterisk), the actual width is read from the next element of the tuple in values, and the value to convert comes
+  // after the precision. 6. Length modifier (optional). 7. Conversion type.  length modifier is ignored
+
+  var ret;
+  var replFunc;
+  var index;
+  var regex;
+  if (rhs.constructor !== Sk.builtin.tuple && (rhs.mp$subscript === undefined || rhs.constructor === Sk.builtin.str)) {
+    rhs = new Sk.builtin.tuple([rhs]);
+  }
+
+  // general approach is to use a regex that matches the format above, and
+  // do an re.sub with a function as replacement to make the subs.
+
+  //           1 2222222222222222   33333333   444444444   5555555555555  66666  777777777777777777
+  regex = /%(\([a-zA-Z0-9]+\))?([#0 +\-]+)?(\*|[0-9]+)?(\.(\*|[0-9]+))?[hlL]?([diouxXeEfFgGcrs%])/g;
+  index = 0;
+  replFunc = function (substring, mappingKey, conversionFlags, fieldWidth, precision, precbody, conversionType) {
+    var result;
+    var convName;
+    var convValue;
+    var base;
+    var r;
+    var mk;
+    var value;
+    var handleWidth;
+    var formatNumber;
+    var alternateForm;
+    var precedeWithSign;
+    var blankBeforePositive;
+    var leftAdjust;
+    var zeroPad;
+    var i;
+    fieldWidth = Sk.builtin.asnum$(fieldWidth);
+    precision = Sk.builtin.asnum$(precision);
+    if (mappingKey === undefined || mappingKey === "") {
+      i = index++;
+    } // ff passes '' not undef for some reason
+
+    if (precision === "") {
+      // ff passes '' here aswell causing problems with G,g, etc.
+      precision = undefined;
+    }
+    zeroPad = false;
+    leftAdjust = false;
+    blankBeforePositive = false;
+    precedeWithSign = false;
+    alternateForm = false;
+    if (conversionFlags) {
+      if (conversionFlags.indexOf("-") !== -1) {
+        leftAdjust = true;
+      } else if (conversionFlags.indexOf("0") !== -1) {
+        zeroPad = true;
+      }
+      if (conversionFlags.indexOf("+") !== -1) {
+        precedeWithSign = true;
+      } else if (conversionFlags.indexOf(" ") !== -1) {
+        blankBeforePositive = true;
+      }
+      alternateForm = conversionFlags.indexOf("#") !== -1;
+    }
+    if (precision) {
+      precision = parseInt(precision.substr(1), 10);
+    }
+    formatNumber = function (n, base) {
+      var precZeroPadded;
+      var prefix;
+      var didSign;
+      var neg;
+      var r;
+      var j;
+      base = Sk.builtin.asnum$(base);
+      neg = false;
+      didSign = false;
+      if (typeof n === "number") {
+        if (n < 0) {
+          n = -n;
+          neg = true;
+        }
+        r = n.toString(base);
+      } else if (n instanceof Sk.builtin.float_) {
+        r = n.str$(base, false);
+        if (r.length > 2 && r.substr(-2) === ".0") {
+          r = r.substr(0, r.length - 2);
+        }
+        neg = n.nb$isnegative();
+      } else if (n instanceof Sk.builtin.int_) {
+        r = n.str$(base, false);
+        neg = n.nb$isnegative();
+      } else if (n instanceof Sk.builtin.lng) {
+        r = n.str$(base, false);
+        neg = n.nb$isnegative(); //	neg = n.size$ < 0;	RNL long.js change
+      }
+
+      goog.asserts.assert(r !== undefined, "unhandled number format");
+      precZeroPadded = false;
+      if (precision) {
+        //print("r.length",r.length,"precision",precision);
+        for (j = r.length; j < precision; ++j) {
+          r = "0" + r;
+          precZeroPadded = true;
+        }
+      }
+      prefix = "";
+      if (neg) {
+        prefix = "-";
+      } else if (precedeWithSign) {
+        prefix = "+" + prefix;
+      } else if (blankBeforePositive) {
+        prefix = " " + prefix;
+      }
+      if (alternateForm) {
+        if (base === 16) {
+          prefix += "0x";
+        } else if (base === 8 && !precZeroPadded && r !== "0") {
+          prefix += "0";
+        }
+      }
+      return [prefix, r];
+    };
+    handleWidth = function (args) {
+      var totLen;
+      var prefix = args[0];
+      var r = args[1];
+      var j;
+      if (fieldWidth) {
+        fieldWidth = parseInt(fieldWidth, 10);
+        totLen = r.length + prefix.length;
+        if (zeroPad) {
+          for (j = totLen; j < fieldWidth; ++j) {
+            r = "0" + r;
+          }
+        } else if (leftAdjust) {
+          for (j = totLen; j < fieldWidth; ++j) {
+            r = r + " ";
+          }
+        } else {
+          for (j = totLen; j < fieldWidth; ++j) {
+            prefix = " " + prefix;
+          }
+        }
+      }
+      return prefix + r;
+    };
+
+    //print("Rhs:",rhs, "ctor", rhs.constructor);
+    if (rhs.constructor === Sk.builtin.tuple) {
+      value = rhs.v[i];
+    } else if (rhs.mp$subscript !== undefined && mappingKey !== undefined) {
+      mk = mappingKey.substring(1, mappingKey.length - 1);
+      //print("mk",mk);
+      value = rhs.mp$subscript(new Sk.builtin.str(mk));
+    } else if (rhs.constructor === Sk.builtin.dict || rhs.constructor === Sk.builtin.list) {
+      // new case where only one argument is provided
+      value = rhs;
+    } else {
+      throw new Sk.builtin.AttributeError(rhs.tp$name + " instance has no attribute 'mp$subscript'");
+    }
+    base = 10;
+    if (conversionType === "d" || conversionType === "i") {
+      return handleWidth(formatNumber(value, 10));
+    } else if (conversionType === "o") {
+      return handleWidth(formatNumber(value, 8));
+    } else if (conversionType === "x") {
+      return handleWidth(formatNumber(value, 16));
+    } else if (conversionType === "X") {
+      return handleWidth(formatNumber(value, 16)).toUpperCase();
+    } else if (conversionType === "f" || conversionType === "F" || conversionType === "e" || conversionType === "E" || conversionType === "g" || conversionType === "G") {
+      convValue = Sk.builtin.asnum$(value);
+      if (typeof convValue === "string") {
+        convValue = Number(convValue);
+      }
+      if (convValue === Infinity) {
+        return "inf";
+      }
+      if (convValue === -Infinity) {
+        return "-inf";
+      }
+      if (isNaN(convValue)) {
+        return "nan";
+      }
+      convName = ["toExponential", "toFixed", "toPrecision"]["efg".indexOf(conversionType.toLowerCase())];
+      if (precision === undefined || precision === "") {
+        if (conversionType === "e" || conversionType === "E") {
+          precision = 6;
+        } else if (conversionType === "f" || conversionType === "F") {
+          precision = 7;
+        }
+      }
+      result = convValue[convName](precision); // possible loose of negative zero sign
+
+      // apply sign to negative zeros, floats only!
+      if (Sk.builtin.checkFloat(value)) {
+        if (convValue === 0 && 1 / convValue === -Infinity) {
+          result = "-" + result; // add sign for zero
+        }
+      }
+
+      if ("EFG".indexOf(conversionType) !== -1) {
+        result = result.toUpperCase();
+      }
+      return handleWidth(["", result]);
+    } else if (conversionType === "c") {
+      if (typeof value === "number") {
+        return String.fromCharCode(value);
+      } else if (value instanceof Sk.builtin.int_) {
+        return String.fromCharCode(value.v);
+      } else if (value instanceof Sk.builtin.float_) {
+        return String.fromCharCode(value.v);
+      } else if (value instanceof Sk.builtin.lng) {
+        return String.fromCharCode(value.str$(10, false)[0]);
+      } else if (value.constructor === Sk.builtin.str) {
+        return value.v.substr(0, 1);
+      } else {
+        throw new Sk.builtin.TypeError("an integer is required");
+      }
+    } else if (conversionType === "r") {
+      r = Sk.builtin.repr(value);
+      if (precision) {
+        return r.v.substr(0, precision);
+      }
+      return r.v;
+    } else if (conversionType === "s") {
+      r = new Sk.builtin.str(value);
+      if (precision) {
+        return r.v.substr(0, precision);
+      }
+      if (fieldWidth) {
+        r.v = handleWidth([" ", r.v]);
+      }
+      return r.v;
+    } else if (conversionType === "%") {
+      return "%";
+    }
+  };
+  ret = this.v.replace(regex, replFunc);
+  return new Sk.builtin.str(ret);
+};
+
+/**
+ * @constructor
+ * @param {Object} obj
+ */
+Sk.builtin.str_iter_ = function (obj) {
+  if (!(this instanceof Sk.builtin.str_iter_)) {
+    return new Sk.builtin.str_iter_(obj);
+  }
+  this.$index = 0;
+  this.$obj = obj.v.slice();
+  this.sq$length = this.$obj.length;
+  this.tp$iter = this;
+  this.tp$iternext = function () {
+    if (this.$index >= this.sq$length) {
+      return undefined;
+    }
+    return new Sk.builtin.str(this.$obj.substr(this.$index++, 1));
+  };
+  this.$r = function () {
+    return new Sk.builtin.str("iterator");
+  };
+  return this;
+};
+Sk.abstr.setUpInheritance("iterator", Sk.builtin.str_iter_, Sk.builtin.object);
+Sk.builtin.str_iter_.prototype.__class__ = Sk.builtin.str_iter_;
+Sk.builtin.str_iter_.prototype.__iter__ = new Sk.builtin.func(function (self) {
+  Sk.builtin.pyCheckArgs("__iter__", arguments, 0, 0, true, false);
+  return self;
+});
+Sk.builtin.str_iter_.prototype["next"] = new Sk.builtin.func(function (self) {
+  var ret = self.tp$iternext();
+  if (ret === undefined) {
+    throw new Sk.builtin.StopIteration();
+  }
+  return ret;
+});
+
+/* ---- /Users/rob/skulpty/lib/../node_modules/skulpt/src/tokenize.js ---- */
+
+/*
+ * This is a port of tokenize.py by Ka-Ping Yee.
+ *
+ * each call to readline should return one line of input as a string, or
+ * undefined if it's finished.
+ *
+ * callback is called for each token with 5 args:
+ * 1. the token type
+ * 2. the token string
+ * 3. [ start_row, start_col ]
+ * 4. [ end_row, end_col ]
+ * 5. logical line where the token was found, including continuation lines
+ *
+ * callback can return true to abort.
+ *
+ */
+
+/**
+ * @constructor
+ */
+Sk.Tokenizer = function (filename, interactive, callback) {
+  this.filename = filename;
+  this.callback = callback;
+  this.lnum = 0;
+  this.parenlev = 0;
+  this.parenstack = [];
+  this.continued = false;
+  this.namechars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_";
+  this.numchars = "0123456789";
+  this.contstr = "";
+  this.needcont = false;
+  this.contline = undefined;
+  this.indents = [0];
+  this.endprog = /.*/;
+  this.strstart = [-1, -1];
+  this.interactive = interactive;
+  this.doneFunc = function () {
+    var i;
+    for (i = 1; i < this.indents.length; ++i)
+    // pop remaining indent levels
+    {
+      if (this.callback(Sk.Tokenizer.Tokens.T_DEDENT, "", [this.lnum, 0], [this.lnum, 0], "")) {
+        return "done";
+      }
+    }
+    if (this.callback(Sk.Tokenizer.Tokens.T_ENDMARKER, "", [this.lnum, 0], [this.lnum, 0], "")) {
+      return "done";
+    }
+    return "failed";
+  };
+};
+
+/**
+ * @enum {number}
+ */
+Sk.Tokenizer.Tokens = {
+  T_ENDMARKER: 0,
+  T_NAME: 1,
+  T_NUMBER: 2,
+  T_STRING: 3,
+  T_NEWLINE: 4,
+  T_INDENT: 5,
+  T_DEDENT: 6,
+  T_LPAR: 7,
+  T_RPAR: 8,
+  T_LSQB: 9,
+  T_RSQB: 10,
+  T_COLON: 11,
+  T_COMMA: 12,
+  T_SEMI: 13,
+  T_PLUS: 14,
+  T_MINUS: 15,
+  T_STAR: 16,
+  T_SLASH: 17,
+  T_VBAR: 18,
+  T_AMPER: 19,
+  T_LESS: 20,
+  T_GREATER: 21,
+  T_EQUAL: 22,
+  T_DOT: 23,
+  T_PERCENT: 24,
+  T_BACKQUOTE: 25,
+  T_LBRACE: 26,
+  T_RBRACE: 27,
+  T_EQEQUAL: 28,
+  T_NOTEQUAL: 29,
+  T_LESSEQUAL: 30,
+  T_GREATEREQUAL: 31,
+  T_TILDE: 32,
+  T_CIRCUMFLEX: 33,
+  T_LEFTSHIFT: 34,
+  T_RIGHTSHIFT: 35,
+  T_DOUBLESTAR: 36,
+  T_PLUSEQUAL: 37,
+  T_MINEQUAL: 38,
+  T_STAREQUAL: 39,
+  T_SLASHEQUAL: 40,
+  T_PERCENTEQUAL: 41,
+  T_AMPEREQUAL: 42,
+  T_VBAREQUAL: 43,
+  T_CIRCUMFLEXEQUAL: 44,
+  T_LEFTSHIFTEQUAL: 45,
+  T_RIGHTSHIFTEQUAL: 46,
+  T_DOUBLESTAREQUAL: 47,
+  T_DOUBLESLASH: 48,
+  T_DOUBLESLASHEQUAL: 49,
+  T_AT: 50,
+  T_OP: 51,
+  T_COMMENT: 52,
+  T_NL: 53,
+  T_RARROW: 54,
+  T_ERRORTOKEN: 55,
+  T_N_TOKENS: 56,
+  T_NT_OFFSET: 256
+};
+
+/** @param {...*} x */
+function group(x) {
+  var args = Array.prototype.slice.call(arguments);
+  return "(" + args.join("|") + ")";
+}
+
+/** @param {...*} x */
+function any(x) {
+  return group.apply(null, arguments) + "*";
+}
+
+/** @param {...*} x */
+function maybe(x) {
+  return group.apply(null, arguments) + "?";
+}
+
+/* we have to use string and ctor to be able to build patterns up. + on /.../
+ * does something strange. */
+var Whitespace = "[ \\f\\t]*";
+var Comment_ = "#[^\\r\\n]*";
+var Ident = "[a-zA-Z_]\\w*";
+var Binnumber = "0[bB][01]*";
+var Hexnumber = "0[xX][\\da-fA-F]*[lL]?";
+var Octnumber = "0[oO]?[0-7]*[lL]?";
+var Decnumber = "[1-9]\\d*[lL]?";
+var Intnumber = group(Binnumber, Hexnumber, Octnumber, Decnumber);
+var Exponent = "[eE][-+]?\\d+";
+var Pointfloat = group("\\d+\\.\\d*", "\\.\\d+") + maybe(Exponent);
+var Expfloat = "\\d+" + Exponent;
+var Floatnumber = group(Pointfloat, Expfloat);
+var Imagnumber = group("\\d+[jJ]", Floatnumber + "[jJ]");
+var Number_ = group(Imagnumber, Floatnumber, Intnumber);
+
+// tail end of ' string
+var Single = "^[^'\\\\]*(?:\\\\.[^'\\\\]*)*'";
+// tail end of " string
+var Double_ = '^[^"\\\\]*(?:\\\\.[^"\\\\]*)*"';
+// tail end of ''' string
+var Single3 = "[^'\\\\]*(?:(?:\\\\.|'(?!''))[^'\\\\]*)*'''";
+// tail end of """ string
+var Double3 = '[^"\\\\]*(?:(?:\\\\.|"(?!""))[^"\\\\]*)*"""';
+var Triple = group("[ubUB]?[rR]?'''", '[ubUB]?[rR]?"""');
+var String_ = group("[uU]?[rR]?'[^\\n'\\\\]*(?:\\\\.[^\\n'\\\\]*)*'", '[uU]?[rR]?"[^\\n"\\\\]*(?:\\\\.[^\\n"\\\\]*)*"');
+
+// Because of leftmost-then-longest match semantics, be sure to put the
+// longest operators first (e.g., if = came before ==, == would get
+// recognized as two instances of =).
+var Operator = group("\\*\\*=?", ">>=?", "<<=?", "<>", "!=", "//=?", "->", "[+\\-*/%&|^=<>]=?", "~");
+var Bracket = "[\\][(){}]";
+var Special = group("\\r?\\n", "[:;.,`@]");
+var Funny = group(Operator, Bracket, Special);
+var ContStr = group("[uUbB]?[rR]?'[^\\n'\\\\]*(?:\\\\.[^\\n'\\\\]*)*" + group("'", "\\\\\\r?\\n"), "[uUbB]?[rR]?\"[^\\n\"\\\\]*(?:\\\\.[^\\n\"\\\\]*)*" + group("\"", "\\\\\\r?\\n"));
+var PseudoExtras = group("\\\\\\r?\\n", Comment_, Triple);
+// Need to prefix with "^" as we only want to match what's next
+var PseudoToken = "^" + group(PseudoExtras, Number_, Funny, ContStr, Ident);
+var triple_quoted = {
+  "'''": true,
+  '"""': true,
+  "r'''": true,
+  'r"""': true,
+  "R'''": true,
+  'R"""': true,
+  "u'''": true,
+  'u"""': true,
+  "U'''": true,
+  'U"""': true,
+  "b'''": true,
+  'b"""': true,
+  "B'''": true,
+  'B"""': true,
+  "ur'''": true,
+  'ur"""': true,
+  "Ur'''": true,
+  'Ur"""': true,
+  "uR'''": true,
+  'uR"""': true,
+  "UR'''": true,
+  'UR"""': true,
+  "br'''": true,
+  'br"""': true,
+  "Br'''": true,
+  'Br"""': true,
+  "bR'''": true,
+  'bR"""': true,
+  "BR'''": true,
+  'BR"""': true
+};
+var single_quoted = {
+  "'": true,
+  '"': true,
+  "r'": true,
+  'r"': true,
+  "R'": true,
+  'R"': true,
+  "u'": true,
+  'u"': true,
+  "U'": true,
+  'U"': true,
+  "b'": true,
+  'b"': true,
+  "B'": true,
+  'B"': true,
+  "ur'": true,
+  'ur"': true,
+  "Ur'": true,
+  'Ur"': true,
+  "uR'": true,
+  'uR"': true,
+  "UR'": true,
+  'UR"': true,
+  "br'": true,
+  'br"': true,
+  "Br'": true,
+  'Br"': true,
+  "bR'": true,
+  'bR"': true,
+  "BR'": true,
+  'BR"': true
+};
+
+// hack to make closure keep those objects. not sure what a better way is.
+(function () {
+  var k;
+  for (k in triple_quoted) {}
+  for (k in single_quoted) {}
+})();
+var tabsize = 8;
+function contains(a, obj) {
+  var i = a.length;
+  while (i--) {
+    if (a[i] === obj) {
+      return true;
+    }
+  }
+  return false;
+}
+function rstrip(input, what) {
+  var i;
+  for (i = input.length; i > 0; --i) {
+    if (what.indexOf(input.charAt(i - 1)) === -1) {
+      break;
+    }
+  }
+  return input.substring(0, i);
+}
+Sk.Tokenizer.prototype.generateTokens = function (line) {
+  var nl_pos;
+  var newl;
+  var initial;
+  var token;
+  var epos;
+  var spos;
+  var start;
+  var pseudomatch;
+  var capos;
+  var comment_token;
+  var endmatch, pos, column, end, max;
+
+  // bnm - Move these definitions in this function otherwise test state is preserved between
+  // calls on single3prog and double3prog causing weird errors with having multiple instances
+  // of triple quoted strings in the same program.
+
+  var pseudoprog = new RegExp(PseudoToken);
+  var single3prog = new RegExp(Single3, "g");
+  var double3prog = new RegExp(Double3, "g");
+  var endprogs = {
+    "'": new RegExp(Single, "g"),
+    "\"": new RegExp(Double_, "g"),
+    "'''": single3prog,
+    '"""': double3prog,
+    "r'''": single3prog,
+    'r"""': double3prog,
+    "u'''": single3prog,
+    'u"""': double3prog,
+    "b'''": single3prog,
+    'b"""': double3prog,
+    "ur'''": single3prog,
+    'ur"""': double3prog,
+    "br'''": single3prog,
+    'br"""': double3prog,
+    "R'''": single3prog,
+    'R"""': double3prog,
+    "U'''": single3prog,
+    'U"""': double3prog,
+    "B'''": single3prog,
+    'B"""': double3prog,
+    "uR'''": single3prog,
+    'uR"""': double3prog,
+    "Ur'''": single3prog,
+    'Ur"""': double3prog,
+    "UR'''": single3prog,
+    'UR"""': double3prog,
+    "bR'''": single3prog,
+    'bR"""': double3prog,
+    "Br'''": single3prog,
+    'Br"""': double3prog,
+    "BR'''": single3prog,
+    'BR"""': double3prog,
+    'r': null,
+    'R': null,
+    'u': null,
+    'U': null,
+    'b': null,
+    'B': null
+  };
+  if (!line) {
+    line = '';
+  }
+  //print("LINE:'"+line+"'");
+
+  this.lnum += 1;
+  pos = 0;
+  max = line.length;
+  if (this.contstr.length > 0) {
+    if (!line) {
+      throw new Sk.builtin.SyntaxError("EOF in multi-line string", this.filename, this.strstart[0], this.strstart[1], {
+        kind: "STRING_EOF",
+        line: this.contline
+      });
+    }
+    this.endprog.lastIndex = 0;
+    endmatch = this.endprog.test(line);
+    if (endmatch) {
+      pos = end = this.endprog.lastIndex;
+      if (this.callback(Sk.Tokenizer.Tokens.T_STRING, this.contstr + line.substring(0, end), this.strstart, [this.lnum, end], this.contline + line)) {
+        return 'done';
+      }
+      this.contstr = '';
+      this.needcont = false;
+      this.contline = undefined;
+    } else if (this.needcont && line.substring(line.length - 2) !== "\\\n" && line.substring(line.length - 3) !== "\\\r\n") {
+      if (this.callback(Sk.Tokenizer.Tokens.T_ERRORTOKEN, this.contstr + line, this.strstart, [this.lnum, line.length], this.contline)) {
+        return 'done';
+      }
+      this.contstr = '';
+      this.contline = undefined;
+      return false;
+    } else {
+      this.contstr += line;
+      this.contline = this.contline + line;
+      return false;
+    }
+  } else if (this.parenlev === 0 && !this.continued) {
+    if (!line) {
+      return this.doneFunc();
+    }
+    column = 0;
+    while (pos < max) {
+      if (line.charAt(pos) === ' ') {
+        column += 1;
+      } else if (line.charAt(pos) === '\t') {
+        column = (column / tabsize + 1) * tabsize;
+      } else if (line.charAt(pos) === '\f') {
+        column = 0;
+      } else {
+        break;
+      }
+      pos = pos + 1;
+    }
+    if (pos === max) {
+      return this.doneFunc();
+    }
+    if ("#\r\n".indexOf(line.charAt(pos)) !== -1)
+      // skip comments or blank lines
+      {
+        if (line.charAt(pos) === '#') {
+          comment_token = rstrip(line.substring(pos), '\r\n');
+          nl_pos = pos + comment_token.length;
+          if (this.callback(Sk.Tokenizer.Tokens.T_COMMENT, comment_token, [this.lnum, pos], [this.lnum, pos + comment_token.length], line)) {
+            return 'done';
+          }
+          //print("HERE:1");
+          if (this.callback(Sk.Tokenizer.Tokens.T_NL, line.substring(nl_pos), [this.lnum, nl_pos], [this.lnum, line.length], line)) {
+            return 'done';
+          }
+          return false;
+        } else {
+          //print("HERE:2");
+          if (this.callback(Sk.Tokenizer.Tokens.T_NL, line.substring(pos), [this.lnum, pos], [this.lnum, line.length], line)) {
+            return 'done';
+          }
+          if (!this.interactive) {
+            return false;
+          }
+        }
+      }
+    if (column > this.indents[this.indents.length - 1])
+      // count indents or dedents
+      {
+        this.indents.push(column);
+        if (this.callback(Sk.Tokenizer.Tokens.T_INDENT, line.substring(0, pos), [this.lnum, 0], [this.lnum, pos], line)) {
+          return 'done';
+        }
+      }
+    while (column < this.indents[this.indents.length - 1]) {
+      if (!contains(this.indents, column)) {
+        throw new Sk.builtin.IndentationError("unindent does not match any outer indentation level", this.filename, this.lnum, pos, line);
+      }
+      this.indents.splice(this.indents.length - 1, 1);
+      //print("dedent here");
+      if (this.callback(Sk.Tokenizer.Tokens.T_DEDENT, '', [this.lnum, pos], [this.lnum, pos], line)) {
+        return 'done';
+      }
+    }
+  } else
+    // continued statement
+    {
+      if (!line) {
+        throw new Sk.builtin.SyntaxError("EOF in multi-line statement", this.filename, this.lnum, 0, {
+          kind: 'STATEMENT_EOF',
+          parenlev: this.parenlev,
+          parenstack: this.parenstack
+        });
+      }
+      this.continued = false;
+    }
+  while (pos < max) {
+    //print("pos:"+pos+":"+max);
+    // js regexes don't return any info about matches, other than the
+    // content. we'd like to put a \w+ before pseudomatch, but then we
+    // can't get any data
+    capos = line.charAt(pos);
+    while (capos === ' ' || capos === '\f' || capos === '\t') {
+      pos += 1;
+      capos = line.charAt(pos);
+    }
+    pseudoprog.lastIndex = 0;
+    pseudomatch = pseudoprog.exec(line.substring(pos));
+    if (pseudomatch) {
+      start = pos;
+      end = start + pseudomatch[1].length;
+      spos = [this.lnum, start];
+      epos = [this.lnum, end];
+      pos = end;
+      token = line.substring(start, end);
+      initial = line.charAt(start);
+      //Sk.debugout("token:",token, "initial:",initial, start, end);
+      if (this.numchars.indexOf(initial) !== -1 || initial === '.' && token !== '.') {
+        if (this.callback(Sk.Tokenizer.Tokens.T_NUMBER, token, spos, epos, line)) {
+          return 'done';
+        }
+      } else if (initial === '\r' || initial === '\n') {
+        newl = Sk.Tokenizer.Tokens.T_NEWLINE;
+        //print("HERE:3");
+        if (this.parenlev > 0) {
+          newl = Sk.Tokenizer.Tokens.T_NL;
+        }
+        if (this.callback(newl, token, spos, epos, line)) {
+          return 'done';
+        }
+      } else if (initial === '#') {
+        if (this.callback(Sk.Tokenizer.Tokens.T_COMMENT, token, spos, epos, line)) {
+          return 'done';
+        }
+      } else if (triple_quoted.hasOwnProperty(token)) {
+        this.endprog = endprogs[token];
+        this.endprog.lastIndex = 0;
+        endmatch = this.endprog.test(line.substring(pos));
+        if (endmatch) {
+          pos = this.endprog.lastIndex + pos;
+          token = line.substring(start, pos);
+          if (this.callback(Sk.Tokenizer.Tokens.T_STRING, token, spos, [this.lnum, pos], line)) {
+            return 'done';
+          }
+        } else {
+          this.strstart = [this.lnum, start];
+          this.contstr = line.substring(start);
+          this.contline = line;
+          return false;
+        }
+      } else if (single_quoted.hasOwnProperty(initial) || single_quoted.hasOwnProperty(token.substring(0, 2)) || single_quoted.hasOwnProperty(token.substring(0, 3))) {
+        if (token[token.length - 1] === '\n') {
+          this.strstart = [this.lnum, start];
+          this.endprog = endprogs[initial] || endprogs[token[1]] || endprogs[token[2]];
+          this.contstr = line.substring(start);
+          this.needcont = true;
+          this.contline = line;
+          //print("i, t1, t2", initial, token[1], token[2]);
+          //print("ep, cs", this.endprog, this.contstr);
+          return false;
+        } else {
+          if (this.callback(Sk.Tokenizer.Tokens.T_STRING, token, spos, epos, line)) {
+            return 'done';
+          }
+        }
+      } else if (this.namechars.indexOf(initial) !== -1) {
+        if (this.callback(Sk.Tokenizer.Tokens.T_NAME, token, spos, epos, line)) {
+          return 'done';
+        }
+      } else if (initial === '\\') {
+        //print("HERE:4");
+        if (this.callback(Sk.Tokenizer.Tokens.T_NL, token, spos, [this.lnum, pos], line)) {
+          return 'done';
+        }
+        this.continued = true;
+      } else {
+        if ('([{'.indexOf(initial) !== -1) {
+          this.parenlev += 1;
+          this.parenstack.push([initial, this.lnum, pos]);
+        } else if (')]}'.indexOf(initial) !== -1) {
+          this.parenlev -= 1;
+          this.parenstack.pop();
+        }
+        if (this.callback(Sk.Tokenizer.Tokens.T_OP, token, spos, epos, line)) {
+          return 'done';
+        }
+      }
+    } else {
+      if (this.callback(Sk.Tokenizer.Tokens.T_ERRORTOKEN, line.charAt(pos), [this.lnum, pos], [this.lnum, pos + 1], line)) {
+        return 'done';
+      }
+      pos += 1;
+    }
+  }
+  return false;
+};
+Sk.Tokenizer.tokenNames = {
+  0: 'T_ENDMARKER',
+  1: 'T_NAME',
+  2: 'T_NUMBER',
+  3: 'T_STRING',
+  4: 'T_NEWLINE',
+  5: 'T_INDENT',
+  6: 'T_DEDENT',
+  7: 'T_LPAR',
+  8: 'T_RPAR',
+  9: 'T_LSQB',
+  10: 'T_RSQB',
+  11: 'T_COLON',
+  12: 'T_COMMA',
+  13: 'T_SEMI',
+  14: 'T_PLUS',
+  15: 'T_MINUS',
+  16: 'T_STAR',
+  17: 'T_SLASH',
+  18: 'T_VBAR',
+  19: 'T_AMPER',
+  20: 'T_LESS',
+  21: 'T_GREATER',
+  22: 'T_EQUAL',
+  23: 'T_DOT',
+  24: 'T_PERCENT',
+  25: 'T_BACKQUOTE',
+  26: 'T_LBRACE',
+  27: 'T_RBRACE',
+  28: 'T_EQEQUAL',
+  29: 'T_NOTEQUAL',
+  30: 'T_LESSEQUAL',
+  31: 'T_GREATEREQUAL',
+  32: 'T_TILDE',
+  33: 'T_CIRCUMFLEX',
+  34: 'T_LEFTSHIFT',
+  35: 'T_RIGHTSHIFT',
+  36: 'T_DOUBLESTAR',
+  37: 'T_PLUSEQUAL',
+  38: 'T_MINEQUAL',
+  39: 'T_STAREQUAL',
+  40: 'T_SLASHEQUAL',
+  41: 'T_PERCENTEQUAL',
+  42: 'T_AMPEREQUAL',
+  43: 'T_VBAREQUAL',
+  44: 'T_CIRCUMFLEXEQUAL',
+  45: 'T_LEFTSHIFTEQUAL',
+  46: 'T_RIGHTSHIFTEQUAL',
+  47: 'T_DOUBLESTAREQUAL',
+  48: 'T_DOUBLESLASH',
+  49: 'T_DOUBLESLASHEQUAL',
+  50: 'T_AT',
+  51: 'T_OP',
+  52: 'T_COMMENT',
+  53: 'T_NL',
+  54: 'T_RARROW',
+  55: 'T_ERRORTOKEN',
+  56: 'T_N_TOKENS',
+  256: 'T_NT_OFFSET'
+};
+goog.exportSymbol("Sk.Tokenizer", Sk.Tokenizer);
+goog.exportSymbol("Sk.Tokenizer.prototype.generateTokens", Sk.Tokenizer.prototype.generateTokens);
+goog.exportSymbol("Sk.Tokenizer.tokenNames", Sk.Tokenizer.tokenNames);
+
+/* ---- /Users/rob/skulpty/lib/../node_modules/skulpt/gen/parse_tables.js ---- */
+
+// generated by pgen/main.py
+Sk.OpMap = {
+  "(": Sk.Tokenizer.Tokens.T_LPAR,
+  ")": Sk.Tokenizer.Tokens.T_RPAR,
+  "[": Sk.Tokenizer.Tokens.T_LSQB,
+  "]": Sk.Tokenizer.Tokens.T_RSQB,
+  ":": Sk.Tokenizer.Tokens.T_COLON,
+  ",": Sk.Tokenizer.Tokens.T_COMMA,
+  ";": Sk.Tokenizer.Tokens.T_SEMI,
+  "+": Sk.Tokenizer.Tokens.T_PLUS,
+  "-": Sk.Tokenizer.Tokens.T_MINUS,
+  "*": Sk.Tokenizer.Tokens.T_STAR,
+  "/": Sk.Tokenizer.Tokens.T_SLASH,
+  "|": Sk.Tokenizer.Tokens.T_VBAR,
+  "&": Sk.Tokenizer.Tokens.T_AMPER,
+  "<": Sk.Tokenizer.Tokens.T_LESS,
+  ">": Sk.Tokenizer.Tokens.T_GREATER,
+  "=": Sk.Tokenizer.Tokens.T_EQUAL,
+  ".": Sk.Tokenizer.Tokens.T_DOT,
+  "%": Sk.Tokenizer.Tokens.T_PERCENT,
+  "`": Sk.Tokenizer.Tokens.T_BACKQUOTE,
+  "{": Sk.Tokenizer.Tokens.T_LBRACE,
+  "}": Sk.Tokenizer.Tokens.T_RBRACE,
+  "@": Sk.Tokenizer.Tokens.T_AT,
+  "==": Sk.Tokenizer.Tokens.T_EQEQUAL,
+  "!=": Sk.Tokenizer.Tokens.T_NOTEQUAL,
+  "<>": Sk.Tokenizer.Tokens.T_NOTEQUAL,
+  "<=": Sk.Tokenizer.Tokens.T_LESSEQUAL,
+  ">=": Sk.Tokenizer.Tokens.T_GREATEREQUAL,
+  "~": Sk.Tokenizer.Tokens.T_TILDE,
+  "^": Sk.Tokenizer.Tokens.T_CIRCUMFLEX,
+  "<<": Sk.Tokenizer.Tokens.T_LEFTSHIFT,
+  ">>": Sk.Tokenizer.Tokens.T_RIGHTSHIFT,
+  "**": Sk.Tokenizer.Tokens.T_DOUBLESTAR,
+  "+=": Sk.Tokenizer.Tokens.T_PLUSEQUAL,
+  "-=": Sk.Tokenizer.Tokens.T_MINEQUAL,
+  "*=": Sk.Tokenizer.Tokens.T_STAREQUAL,
+  "/=": Sk.Tokenizer.Tokens.T_SLASHEQUAL,
+  "%=": Sk.Tokenizer.Tokens.T_PERCENTEQUAL,
+  "&=": Sk.Tokenizer.Tokens.T_AMPEREQUAL,
+  "|=": Sk.Tokenizer.Tokens.T_VBAREQUAL,
+  "^=": Sk.Tokenizer.Tokens.T_CIRCUMFLEXEQUAL,
+  "<<=": Sk.Tokenizer.Tokens.T_LEFTSHIFTEQUAL,
+  ">>=": Sk.Tokenizer.Tokens.T_RIGHTSHIFTEQUAL,
+  "**=": Sk.Tokenizer.Tokens.T_DOUBLESTAREQUAL,
+  "//": Sk.Tokenizer.Tokens.T_DOUBLESLASH,
+  "//=": Sk.Tokenizer.Tokens.T_DOUBLESLASHEQUAL,
+  "->": Sk.Tokenizer.Tokens.T_RARROW
+};
+Sk.ParseTables = {
+  sym: {
+    and_expr: 257,
+    and_test: 258,
+    arglist: 259,
+    argument: 260,
+    arith_expr: 261,
+    assert_stmt: 262,
+    atom: 263,
+    augassign: 264,
+    break_stmt: 265,
+    classdef: 266,
+    comp_for: 267,
+    comp_if: 268,
+    comp_iter: 269,
+    comp_op: 270,
+    comparison: 271,
+    compound_stmt: 272,
+    continue_stmt: 273,
+    debugger_stmt: 274,
+    decorated: 275,
+    decorator: 276,
+    decorators: 277,
+    del_stmt: 278,
+    dictorsetmaker: 279,
+    dotted_as_name: 280,
+    dotted_as_names: 281,
+    dotted_name: 282,
+    encoding_decl: 283,
+    eval_input: 284,
+    except_clause: 285,
+    exec_stmt: 286,
+    expr: 287,
+    expr_stmt: 288,
+    exprlist: 289,
+    factor: 290,
+    file_input: 291,
+    flow_stmt: 292,
+    for_stmt: 293,
+    fpdef: 294,
+    fplist: 295,
+    funcdef: 296,
+    global_stmt: 297,
+    if_stmt: 298,
+    import_as_name: 299,
+    import_as_names: 300,
+    import_from: 301,
+    import_name: 302,
+    import_stmt: 303,
+    lambdef: 304,
+    list_for: 305,
+    list_if: 306,
+    list_iter: 307,
+    listmaker: 308,
+    not_test: 309,
+    old_lambdef: 310,
+    old_test: 311,
+    or_test: 312,
+    parameters: 313,
+    pass_stmt: 314,
+    power: 315,
+    print_stmt: 316,
+    raise_stmt: 317,
+    return_stmt: 318,
+    shift_expr: 319,
+    simple_stmt: 320,
+    single_input: 256,
+    sliceop: 321,
+    small_stmt: 322,
+    stmt: 323,
+    subscript: 324,
+    subscriptlist: 325,
+    suite: 326,
+    term: 327,
+    test: 328,
+    testlist: 329,
+    testlist1: 330,
+    testlist_comp: 331,
+    testlist_safe: 332,
+    trailer: 333,
+    try_stmt: 334,
+    varargslist: 335,
+    while_stmt: 336,
+    with_item: 337,
+    with_stmt: 338,
+    xor_expr: 339,
+    yield_expr: 340,
+    yield_stmt: 341
+  },
+  number2symbol: {
+    256: 'single_input',
+    257: 'and_expr',
+    258: 'and_test',
+    259: 'arglist',
+    260: 'argument',
+    261: 'arith_expr',
+    262: 'assert_stmt',
+    263: 'atom',
+    264: 'augassign',
+    265: 'break_stmt',
+    266: 'classdef',
+    267: 'comp_for',
+    268: 'comp_if',
+    269: 'comp_iter',
+    270: 'comp_op',
+    271: 'comparison',
+    272: 'compound_stmt',
+    273: 'continue_stmt',
+    274: 'debugger_stmt',
+    275: 'decorated',
+    276: 'decorator',
+    277: 'decorators',
+    278: 'del_stmt',
+    279: 'dictorsetmaker',
+    280: 'dotted_as_name',
+    281: 'dotted_as_names',
+    282: 'dotted_name',
+    283: 'encoding_decl',
+    284: 'eval_input',
+    285: 'except_clause',
+    286: 'exec_stmt',
+    287: 'expr',
+    288: 'expr_stmt',
+    289: 'exprlist',
+    290: 'factor',
+    291: 'file_input',
+    292: 'flow_stmt',
+    293: 'for_stmt',
+    294: 'fpdef',
+    295: 'fplist',
+    296: 'funcdef',
+    297: 'global_stmt',
+    298: 'if_stmt',
+    299: 'import_as_name',
+    300: 'import_as_names',
+    301: 'import_from',
+    302: 'import_name',
+    303: 'import_stmt',
+    304: 'lambdef',
+    305: 'list_for',
+    306: 'list_if',
+    307: 'list_iter',
+    308: 'listmaker',
+    309: 'not_test',
+    310: 'old_lambdef',
+    311: 'old_test',
+    312: 'or_test',
+    313: 'parameters',
+    314: 'pass_stmt',
+    315: 'power',
+    316: 'print_stmt',
+    317: 'raise_stmt',
+    318: 'return_stmt',
+    319: 'shift_expr',
+    320: 'simple_stmt',
+    321: 'sliceop',
+    322: 'small_stmt',
+    323: 'stmt',
+    324: 'subscript',
+    325: 'subscriptlist',
+    326: 'suite',
+    327: 'term',
+    328: 'test',
+    329: 'testlist',
+    330: 'testlist1',
+    331: 'testlist_comp',
+    332: 'testlist_safe',
+    333: 'trailer',
+    334: 'try_stmt',
+    335: 'varargslist',
+    336: 'while_stmt',
+    337: 'with_item',
+    338: 'with_stmt',
+    339: 'xor_expr',
+    340: 'yield_expr',
+    341: 'yield_stmt'
+  },
+  dfas: {
+    256: [[[[1, 1], [2, 1], [3, 2]], [[0, 1]], [[2, 1]]], {
+      2: 1,
+      4: 1,
+      5: 1,
+      6: 1,
+      7: 1,
+      8: 1,
+      9: 1,
+      10: 1,
+      11: 1,
+      12: 1,
+      13: 1,
+      14: 1,
+      15: 1,
+      16: 1,
+      17: 1,
+      18: 1,
+      19: 1,
+      20: 1,
+      21: 1,
+      22: 1,
+      23: 1,
+      24: 1,
+      25: 1,
+      26: 1,
+      27: 1,
+      28: 1,
+      29: 1,
+      30: 1,
+      31: 1,
+      32: 1,
+      33: 1,
+      34: 1,
+      35: 1,
+      36: 1,
+      37: 1
+    }],
+    257: [[[[38, 1]], [[39, 0], [0, 1]]], {
+      6: 1,
+      8: 1,
+      9: 1,
+      14: 1,
+      15: 1,
+      19: 1,
+      22: 1,
+      26: 1,
+      30: 1,
+      37: 1
+    }],
+    258: [[[[40, 1]], [[41, 0], [0, 1]]], {
+      6: 1,
+      7: 1,
+      8: 1,
+      9: 1,
+      14: 1,
+      15: 1,
+      19: 1,
+      22: 1,
+      26: 1,
+      30: 1,
+      37: 1
+    }],
+    259: [[[[42, 1], [43, 2], [44, 3]], [[45, 4]], [[46, 5], [0, 2]], [[45, 6]], [[46, 7], [0, 4]], [[42, 1], [43, 2], [44, 3], [0, 5]], [[0, 6]], [[43, 4], [44, 3]]], {
+      6: 1,
+      7: 1,
+      8: 1,
+      9: 1,
+      11: 1,
+      14: 1,
+      15: 1,
+      19: 1,
+      22: 1,
+      26: 1,
+      30: 1,
+      37: 1,
+      42: 1,
+      44: 1
+    }],
+    260: [[[[45, 1]], [[47, 2], [48, 3], [0, 1]], [[45, 3]], [[0, 3]]], {
+      6: 1,
+      7: 1,
+      8: 1,
+      9: 1,
+      11: 1,
+      14: 1,
+      15: 1,
+      19: 1,
+      22: 1,
+      26: 1,
+      30: 1,
+      37: 1
+    }],
+    261: [[[[49, 1]], [[26, 0], [37, 0], [0, 1]]], {
+      6: 1,
+      8: 1,
+      9: 1,
+      14: 1,
+      15: 1,
+      19: 1,
+      22: 1,
+      26: 1,
+      30: 1,
+      37: 1
+    }],
+    262: [[[[21, 1]], [[45, 2]], [[46, 3], [0, 2]], [[45, 4]], [[0, 4]]], {
+      21: 1
+    }],
+    263: [[[[19, 1], [8, 2], [9, 5], [30, 4], [14, 3], [15, 6], [22, 2]], [[19, 1], [0, 1]], [[0, 2]], [[50, 7], [51, 2]], [[52, 2], [53, 8], [54, 8]], [[55, 2], [56, 9]], [[57, 10]], [[51, 2]], [[52, 2]], [[55, 2]], [[15, 2]]], {
+      8: 1,
+      9: 1,
+      14: 1,
+      15: 1,
+      19: 1,
+      22: 1,
+      30: 1
+    }],
+    264: [[[[58, 1], [59, 1], [60, 1], [61, 1], [62, 1], [63, 1], [64, 1], [65, 1], [66, 1], [67, 1], [68, 1], [69, 1]], [[0, 1]]], {
+      58: 1,
+      59: 1,
+      60: 1,
+      61: 1,
+      62: 1,
+      63: 1,
+      64: 1,
+      65: 1,
+      66: 1,
+      67: 1,
+      68: 1,
+      69: 1
+    }],
+    265: [[[[33, 1]], [[0, 1]]], {
+      33: 1
+    }],
+    266: [[[[10, 1]], [[22, 2]], [[70, 3], [30, 4]], [[71, 5]], [[52, 6], [72, 7]], [[0, 5]], [[70, 3]], [[52, 6]]], {
+      10: 1
+    }],
+    267: [[[[29, 1]], [[73, 2]], [[74, 3]], [[75, 4]], [[76, 5], [0, 4]], [[0, 5]]], {
+      29: 1
+    }],
+    268: [[[[32, 1]], [[77, 2]], [[76, 3], [0, 2]], [[0, 3]]], {
+      32: 1
+    }],
+    269: [[[[78, 1], [48, 1]], [[0, 1]]], {
+      29: 1,
+      32: 1
+    }],
+    270: [[[[79, 1], [80, 1], [7, 2], [81, 1], [79, 1], [74, 1], [82, 1], [83, 3], [84, 1], [85, 1]], [[0, 1]], [[74, 1]], [[7, 1], [0, 3]]], {
+      7: 1,
+      74: 1,
+      79: 1,
+      80: 1,
+      81: 1,
+      82: 1,
+      83: 1,
+      84: 1,
+      85: 1
+    }],
+    271: [[[[86, 1]], [[87, 0], [0, 1]]], {
+      6: 1,
+      8: 1,
+      9: 1,
+      14: 1,
+      15: 1,
+      19: 1,
+      22: 1,
+      26: 1,
+      30: 1,
+      37: 1
+    }],
+    272: [[[[88, 1], [89, 1], [90, 1], [91, 1], [92, 1], [93, 1], [94, 1], [95, 1]], [[0, 1]]], {
+      4: 1,
+      10: 1,
+      16: 1,
+      18: 1,
+      29: 1,
+      32: 1,
+      35: 1,
+      36: 1
+    }],
+    273: [[[[34, 1]], [[0, 1]]], {
+      34: 1
+    }],
+    274: [[[[13, 1]], [[0, 1]]], {
+      13: 1
+    }],
+    275: [[[[96, 1]], [[94, 2], [91, 2]], [[0, 2]]], {
+      35: 1
+    }],
+    276: [[[[35, 1]], [[97, 2]], [[2, 4], [30, 3]], [[52, 5], [98, 6]], [[0, 4]], [[2, 4]], [[52, 5]]], {
+      35: 1
+    }],
+    277: [[[[99, 1]], [[99, 1], [0, 1]]], {
+      35: 1
+    }],
+    278: [[[[23, 1]], [[73, 2]], [[0, 2]]], {
+      23: 1
+    }],
+    279: [[[[45, 1]], [[70, 2], [48, 3], [46, 4], [0, 1]], [[45, 5]], [[0, 3]], [[45, 6], [0, 4]], [[48, 3], [46, 7], [0, 5]], [[46, 4], [0, 6]], [[45, 8], [0, 7]], [[70, 9]], [[45, 10]], [[46, 7], [0, 10]]], {
+      6: 1,
+      7: 1,
+      8: 1,
+      9: 1,
+      11: 1,
+      14: 1,
+      15: 1,
+      19: 1,
+      22: 1,
+      26: 1,
+      30: 1,
+      37: 1
+    }],
+    280: [[[[97, 1]], [[100, 2], [0, 1]], [[22, 3]], [[0, 3]]], {
+      22: 1
+    }],
+    281: [[[[101, 1]], [[46, 0], [0, 1]]], {
+      22: 1
+    }],
+    282: [[[[22, 1]], [[102, 0], [0, 1]]], {
+      22: 1
+    }],
+    283: [[[[22, 1]], [[0, 1]]], {
+      22: 1
+    }],
+    284: [[[[72, 1]], [[2, 1], [103, 2]], [[0, 2]]], {
+      6: 1,
+      7: 1,
+      8: 1,
+      9: 1,
+      11: 1,
+      14: 1,
+      15: 1,
+      19: 1,
+      22: 1,
+      26: 1,
+      30: 1,
+      37: 1
+    }],
+    285: [[[[104, 1]], [[45, 2], [0, 1]], [[100, 3], [46, 3], [0, 2]], [[45, 4]], [[0, 4]]], {
+      104: 1
+    }],
+    286: [[[[17, 1]], [[86, 2]], [[74, 3], [0, 2]], [[45, 4]], [[46, 5], [0, 4]], [[45, 6]], [[0, 6]]], {
+      17: 1
+    }],
+    287: [[[[105, 1]], [[106, 0], [0, 1]]], {
+      6: 1,
+      8: 1,
+      9: 1,
+      14: 1,
+      15: 1,
+      19: 1,
+      22: 1,
+      26: 1,
+      30: 1,
+      37: 1
+    }],
+    288: [[[[72, 1]], [[107, 2], [47, 3], [0, 1]], [[72, 4], [53, 4]], [[72, 5], [53, 5]], [[0, 4]], [[47, 3], [0, 5]]], {
+      6: 1,
+      7: 1,
+      8: 1,
+      9: 1,
+      11: 1,
+      14: 1,
+      15: 1,
+      19: 1,
+      22: 1,
+      26: 1,
+      30: 1,
+      37: 1
+    }],
+    289: [[[[86, 1]], [[46, 2], [0, 1]], [[86, 1], [0, 2]]], {
+      6: 1,
+      8: 1,
+      9: 1,
+      14: 1,
+      15: 1,
+      19: 1,
+      22: 1,
+      26: 1,
+      30: 1,
+      37: 1
+    }],
+    290: [[[[37, 2], [26, 2], [6, 2], [108, 1]], [[0, 1]], [[109, 1]]], {
+      6: 1,
+      8: 1,
+      9: 1,
+      14: 1,
+      15: 1,
+      19: 1,
+      22: 1,
+      26: 1,
+      30: 1,
+      37: 1
+    }],
+    291: [[[[2, 0], [103, 1], [110, 0]], [[0, 1]]], {
+      2: 1,
+      4: 1,
+      5: 1,
+      6: 1,
+      7: 1,
+      8: 1,
+      9: 1,
+      10: 1,
+      11: 1,
+      12: 1,
+      13: 1,
+      14: 1,
+      15: 1,
+      16: 1,
+      17: 1,
+      18: 1,
+      19: 1,
+      20: 1,
+      21: 1,
+      22: 1,
+      23: 1,
+      24: 1,
+      25: 1,
+      26: 1,
+      27: 1,
+      28: 1,
+      29: 1,
+      30: 1,
+      31: 1,
+      32: 1,
+      33: 1,
+      34: 1,
+      35: 1,
+      36: 1,
+      37: 1,
+      103: 1
+    }],
+    292: [[[[111, 1], [112, 1], [113, 1], [114, 1], [115, 1]], [[0, 1]]], {
+      5: 1,
+      20: 1,
+      27: 1,
+      33: 1,
+      34: 1
+    }],
+    293: [[[[29, 1]], [[73, 2]], [[74, 3]], [[72, 4]], [[70, 5]], [[71, 6]], [[116, 7], [0, 6]], [[70, 8]], [[71, 9]], [[0, 9]]], {
+      29: 1
+    }],
+    294: [[[[30, 1], [22, 2]], [[117, 3]], [[0, 2]], [[52, 2]]], {
+      22: 1,
+      30: 1
+    }],
+    295: [[[[118, 1]], [[46, 2], [0, 1]], [[118, 1], [0, 2]]], {
+      22: 1,
+      30: 1
+    }],
+    296: [[[[4, 1]], [[22, 2]], [[119, 3]], [[70, 4]], [[71, 5]], [[0, 5]]], {
+      4: 1
+    }],
+    297: [[[[28, 1]], [[22, 2]], [[46, 1], [0, 2]]], {
+      28: 1
+    }],
+    298: [[[[32, 1]], [[45, 2]], [[70, 3]], [[71, 4]], [[116, 5], [120, 1], [0, 4]], [[70, 6]], [[71, 7]], [[0, 7]]], {
+      32: 1
+    }],
+    299: [[[[22, 1]], [[100, 2], [0, 1]], [[22, 3]], [[0, 3]]], {
+      22: 1
+    }],
+    300: [[[[121, 1]], [[46, 2], [0, 1]], [[121, 1], [0, 2]]], {
+      22: 1
+    }],
+    301: [[[[31, 1]], [[97, 2], [102, 3]], [[25, 4]], [[97, 2], [25, 4], [102, 3]], [[122, 5], [42, 5], [30, 6]], [[0, 5]], [[122, 7]], [[52, 5]]], {
+      31: 1
+    }],
+    302: [[[[25, 1]], [[123, 2]], [[0, 2]]], {
+      25: 1
+    }],
+    303: [[[[124, 1], [125, 1]], [[0, 1]]], {
+      25: 1,
+      31: 1
+    }],
+    304: [[[[11, 1]], [[70, 2], [126, 3]], [[45, 4]], [[70, 2]], [[0, 4]]], {
+      11: 1
+    }],
+    305: [[[[29, 1]], [[73, 2]], [[74, 3]], [[127, 4]], [[128, 5], [0, 4]], [[0, 5]]], {
+      29: 1
+    }],
+    306: [[[[32, 1]], [[77, 2]], [[128, 3], [0, 2]], [[0, 3]]], {
+      32: 1
+    }],
+    307: [[[[129, 1], [130, 1]], [[0, 1]]], {
+      29: 1,
+      32: 1
+    }],
+    308: [[[[45, 1]], [[129, 2], [46, 3], [0, 1]], [[0, 2]], [[45, 4], [0, 3]], [[46, 3], [0, 4]]], {
+      6: 1,
+      7: 1,
+      8: 1,
+      9: 1,
+      11: 1,
+      14: 1,
+      15: 1,
+      19: 1,
+      22: 1,
+      26: 1,
+      30: 1,
+      37: 1
+    }],
+    309: [[[[7, 1], [131, 2]], [[40, 2]], [[0, 2]]], {
+      6: 1,
+      7: 1,
+      8: 1,
+      9: 1,
+      14: 1,
+      15: 1,
+      19: 1,
+      22: 1,
+      26: 1,
+      30: 1,
+      37: 1
+    }],
+    310: [[[[11, 1]], [[70, 2], [126, 3]], [[77, 4]], [[70, 2]], [[0, 4]]], {
+      11: 1
+    }],
+    311: [[[[132, 1], [75, 1]], [[0, 1]]], {
+      6: 1,
+      7: 1,
+      8: 1,
+      9: 1,
+      11: 1,
+      14: 1,
+      15: 1,
+      19: 1,
+      22: 1,
+      26: 1,
+      30: 1,
+      37: 1
+    }],
+    312: [[[[133, 1]], [[134, 0], [0, 1]]], {
+      6: 1,
+      7: 1,
+      8: 1,
+      9: 1,
+      14: 1,
+      15: 1,
+      19: 1,
+      22: 1,
+      26: 1,
+      30: 1,
+      37: 1
+    }],
+    313: [[[[30, 1]], [[52, 2], [126, 3]], [[0, 2]], [[52, 2]]], {
+      30: 1
+    }],
+    314: [[[[24, 1]], [[0, 1]]], {
+      24: 1
+    }],
+    315: [[[[135, 1]], [[44, 2], [136, 1], [0, 1]], [[109, 3]], [[0, 3]]], {
+      8: 1,
+      9: 1,
+      14: 1,
+      15: 1,
+      19: 1,
+      22: 1,
+      30: 1
+    }],
+    316: [[[[12, 1]], [[45, 2], [137, 3], [0, 1]], [[46, 4], [0, 2]], [[45, 5]], [[45, 2], [0, 4]], [[46, 6], [0, 5]], [[45, 7]], [[46, 8], [0, 7]], [[45, 7], [0, 8]]], {
+      12: 1
+    }],
+    317: [[[[5, 1]], [[45, 2], [0, 1]], [[46, 3], [0, 2]], [[45, 4]], [[46, 5], [0, 4]], [[45, 6]], [[0, 6]]], {
+      5: 1
+    }],
+    318: [[[[20, 1]], [[72, 2], [0, 1]], [[0, 2]]], {
+      20: 1
+    }],
+    319: [[[[138, 1]], [[139, 0], [137, 0], [0, 1]]], {
+      6: 1,
+      8: 1,
+      9: 1,
+      14: 1,
+      15: 1,
+      19: 1,
+      22: 1,
+      26: 1,
+      30: 1,
+      37: 1
+    }],
+    320: [[[[140, 1]], [[2, 2], [141, 3]], [[0, 2]], [[140, 1], [2, 2]]], {
+      5: 1,
+      6: 1,
+      7: 1,
+      8: 1,
+      9: 1,
+      11: 1,
+      12: 1,
+      13: 1,
+      14: 1,
+      15: 1,
+      17: 1,
+      19: 1,
+      20: 1,
+      21: 1,
+      22: 1,
+      23: 1,
+      24: 1,
+      25: 1,
+      26: 1,
+      27: 1,
+      28: 1,
+      30: 1,
+      31: 1,
+      33: 1,
+      34: 1,
+      37: 1
+    }],
+    321: [[[[70, 1]], [[45, 2], [0, 1]], [[0, 2]]], {
+      70: 1
+    }],
+    322: [[[[142, 1], [143, 1], [144, 1], [145, 1], [146, 1], [147, 1], [148, 1], [149, 1], [150, 1], [151, 1]], [[0, 1]]], {
+      5: 1,
+      6: 1,
+      7: 1,
+      8: 1,
+      9: 1,
+      11: 1,
+      12: 1,
+      13: 1,
+      14: 1,
+      15: 1,
+      17: 1,
+      19: 1,
+      20: 1,
+      21: 1,
+      22: 1,
+      23: 1,
+      24: 1,
+      25: 1,
+      26: 1,
+      27: 1,
+      28: 1,
+      30: 1,
+      31: 1,
+      33: 1,
+      34: 1,
+      37: 1
+    }],
+    323: [[[[1, 1], [3, 1]], [[0, 1]]], {
+      4: 1,
+      5: 1,
+      6: 1,
+      7: 1,
+      8: 1,
+      9: 1,
+      10: 1,
+      11: 1,
+      12: 1,
+      13: 1,
+      14: 1,
+      15: 1,
+      16: 1,
+      17: 1,
+      18: 1,
+      19: 1,
+      20: 1,
+      21: 1,
+      22: 1,
+      23: 1,
+      24: 1,
+      25: 1,
+      26: 1,
+      27: 1,
+      28: 1,
+      29: 1,
+      30: 1,
+      31: 1,
+      32: 1,
+      33: 1,
+      34: 1,
+      35: 1,
+      36: 1,
+      37: 1
+    }],
+    324: [[[[45, 1], [70, 2], [102, 3]], [[70, 2], [0, 1]], [[45, 4], [152, 5], [0, 2]], [[102, 6]], [[152, 5], [0, 4]], [[0, 5]], [[102, 5]]], {
+      6: 1,
+      7: 1,
+      8: 1,
+      9: 1,
+      11: 1,
+      14: 1,
+      15: 1,
+      19: 1,
+      22: 1,
+      26: 1,
+      30: 1,
+      37: 1,
+      70: 1,
+      102: 1
+    }],
+    325: [[[[153, 1]], [[46, 2], [0, 1]], [[153, 1], [0, 2]]], {
+      6: 1,
+      7: 1,
+      8: 1,
+      9: 1,
+      11: 1,
+      14: 1,
+      15: 1,
+      19: 1,
+      22: 1,
+      26: 1,
+      30: 1,
+      37: 1,
+      70: 1,
+      102: 1
+    }],
+    326: [[[[1, 1], [2, 2]], [[0, 1]], [[154, 3]], [[110, 4]], [[155, 1], [110, 4]]], {
+      2: 1,
+      5: 1,
+      6: 1,
+      7: 1,
+      8: 1,
+      9: 1,
+      11: 1,
+      12: 1,
+      13: 1,
+      14: 1,
+      15: 1,
+      17: 1,
+      19: 1,
+      20: 1,
+      21: 1,
+      22: 1,
+      23: 1,
+      24: 1,
+      25: 1,
+      26: 1,
+      27: 1,
+      28: 1,
+      30: 1,
+      31: 1,
+      33: 1,
+      34: 1,
+      37: 1
+    }],
+    327: [[[[109, 1]], [[156, 0], [42, 0], [157, 0], [158, 0], [0, 1]]], {
+      6: 1,
+      8: 1,
+      9: 1,
+      14: 1,
+      15: 1,
+      19: 1,
+      22: 1,
+      26: 1,
+      30: 1,
+      37: 1
+    }],
+    328: [[[[75, 1], [159, 2]], [[32, 3], [0, 1]], [[0, 2]], [[75, 4]], [[116, 5]], [[45, 2]]], {
+      6: 1,
+      7: 1,
+      8: 1,
+      9: 1,
+      11: 1,
+      14: 1,
+      15: 1,
+      19: 1,
+      22: 1,
+      26: 1,
+      30: 1,
+      37: 1
+    }],
+    329: [[[[45, 1]], [[46, 2], [0, 1]], [[45, 1], [0, 2]]], {
+      6: 1,
+      7: 1,
+      8: 1,
+      9: 1,
+      11: 1,
+      14: 1,
+      15: 1,
+      19: 1,
+      22: 1,
+      26: 1,
+      30: 1,
+      37: 1
+    }],
+    330: [[[[45, 1]], [[46, 0], [0, 1]]], {
+      6: 1,
+      7: 1,
+      8: 1,
+      9: 1,
+      11: 1,
+      14: 1,
+      15: 1,
+      19: 1,
+      22: 1,
+      26: 1,
+      30: 1,
+      37: 1
+    }],
+    331: [[[[45, 1]], [[48, 2], [46, 3], [0, 1]], [[0, 2]], [[45, 4], [0, 3]], [[46, 3], [0, 4]]], {
+      6: 1,
+      7: 1,
+      8: 1,
+      9: 1,
+      11: 1,
+      14: 1,
+      15: 1,
+      19: 1,
+      22: 1,
+      26: 1,
+      30: 1,
+      37: 1
+    }],
+    332: [[[[77, 1]], [[46, 2], [0, 1]], [[77, 3]], [[46, 4], [0, 3]], [[77, 3], [0, 4]]], {
+      6: 1,
+      7: 1,
+      8: 1,
+      9: 1,
+      11: 1,
+      14: 1,
+      15: 1,
+      19: 1,
+      22: 1,
+      26: 1,
+      30: 1,
+      37: 1
+    }],
+    333: [[[[30, 1], [102, 2], [14, 3]], [[52, 4], [98, 5]], [[22, 4]], [[160, 6]], [[0, 4]], [[52, 4]], [[51, 4]]], {
+      14: 1,
+      30: 1,
+      102: 1
+    }],
+    334: [[[[16, 1]], [[70, 2]], [[71, 3]], [[161, 4], [162, 5]], [[70, 6]], [[70, 7]], [[71, 8]], [[71, 9]], [[161, 4], [116, 10], [162, 5], [0, 8]], [[0, 9]], [[70, 11]], [[71, 12]], [[162, 5], [0, 12]]], {
+      16: 1
+    }],
+    335: [[[[42, 1], [118, 2], [44, 3]], [[22, 4]], [[47, 5], [46, 6], [0, 2]], [[22, 7]], [[46, 8], [0, 4]], [[45, 9]], [[42, 1], [118, 2], [44, 3], [0, 6]], [[0, 7]], [[44, 3]], [[46, 6], [0, 9]]], {
+      22: 1,
+      30: 1,
+      42: 1,
+      44: 1
+    }],
+    336: [[[[18, 1]], [[45, 2]], [[70, 3]], [[71, 4]], [[116, 5], [0, 4]], [[70, 6]], [[71, 7]], [[0, 7]]], {
+      18: 1
+    }],
+    337: [[[[45, 1]], [[100, 2], [0, 1]], [[86, 3]], [[0, 3]]], {
+      6: 1,
+      7: 1,
+      8: 1,
+      9: 1,
+      11: 1,
+      14: 1,
+      15: 1,
+      19: 1,
+      22: 1,
+      26: 1,
+      30: 1,
+      37: 1
+    }],
+    338: [[[[36, 1]], [[163, 2]], [[70, 3], [46, 1]], [[71, 4]], [[0, 4]]], {
+      36: 1
+    }],
+    339: [[[[164, 1]], [[165, 0], [0, 1]]], {
+      6: 1,
+      8: 1,
+      9: 1,
+      14: 1,
+      15: 1,
+      19: 1,
+      22: 1,
+      26: 1,
+      30: 1,
+      37: 1
+    }],
+    340: [[[[27, 1]], [[72, 2], [0, 1]], [[0, 2]]], {
+      27: 1
+    }],
+    341: [[[[53, 1]], [[0, 1]]], {
+      27: 1
+    }]
+  },
+  states: [[[[1, 1], [2, 1], [3, 2]], [[0, 1]], [[2, 1]]], [[[38, 1]], [[39, 0], [0, 1]]], [[[40, 1]], [[41, 0], [0, 1]]], [[[42, 1], [43, 2], [44, 3]], [[45, 4]], [[46, 5], [0, 2]], [[45, 6]], [[46, 7], [0, 4]], [[42, 1], [43, 2], [44, 3], [0, 5]], [[0, 6]], [[43, 4], [44, 3]]], [[[45, 1]], [[47, 2], [48, 3], [0, 1]], [[45, 3]], [[0, 3]]], [[[49, 1]], [[26, 0], [37, 0], [0, 1]]], [[[21, 1]], [[45, 2]], [[46, 3], [0, 2]], [[45, 4]], [[0, 4]]], [[[19, 1], [8, 2], [9, 5], [30, 4], [14, 3], [15, 6], [22, 2]], [[19, 1], [0, 1]], [[0, 2]], [[50, 7], [51, 2]], [[52, 2], [53, 8], [54, 8]], [[55, 2], [56, 9]], [[57, 10]], [[51, 2]], [[52, 2]], [[55, 2]], [[15, 2]]], [[[58, 1], [59, 1], [60, 1], [61, 1], [62, 1], [63, 1], [64, 1], [65, 1], [66, 1], [67, 1], [68, 1], [69, 1]], [[0, 1]]], [[[33, 1]], [[0, 1]]], [[[10, 1]], [[22, 2]], [[70, 3], [30, 4]], [[71, 5]], [[52, 6], [72, 7]], [[0, 5]], [[70, 3]], [[52, 6]]], [[[29, 1]], [[73, 2]], [[74, 3]], [[75, 4]], [[76, 5], [0, 4]], [[0, 5]]], [[[32, 1]], [[77, 2]], [[76, 3], [0, 2]], [[0, 3]]], [[[78, 1], [48, 1]], [[0, 1]]], [[[79, 1], [80, 1], [7, 2], [81, 1], [79, 1], [74, 1], [82, 1], [83, 3], [84, 1], [85, 1]], [[0, 1]], [[74, 1]], [[7, 1], [0, 3]]], [[[86, 1]], [[87, 0], [0, 1]]], [[[88, 1], [89, 1], [90, 1], [91, 1], [92, 1], [93, 1], [94, 1], [95, 1]], [[0, 1]]], [[[34, 1]], [[0, 1]]], [[[13, 1]], [[0, 1]]], [[[96, 1]], [[94, 2], [91, 2]], [[0, 2]]], [[[35, 1]], [[97, 2]], [[2, 4], [30, 3]], [[52, 5], [98, 6]], [[0, 4]], [[2, 4]], [[52, 5]]], [[[99, 1]], [[99, 1], [0, 1]]], [[[23, 1]], [[73, 2]], [[0, 2]]], [[[45, 1]], [[70, 2], [48, 3], [46, 4], [0, 1]], [[45, 5]], [[0, 3]], [[45, 6], [0, 4]], [[48, 3], [46, 7], [0, 5]], [[46, 4], [0, 6]], [[45, 8], [0, 7]], [[70, 9]], [[45, 10]], [[46, 7], [0, 10]]], [[[97, 1]], [[100, 2], [0, 1]], [[22, 3]], [[0, 3]]], [[[101, 1]], [[46, 0], [0, 1]]], [[[22, 1]], [[102, 0], [0, 1]]], [[[22, 1]], [[0, 1]]], [[[72, 1]], [[2, 1], [103, 2]], [[0, 2]]], [[[104, 1]], [[45, 2], [0, 1]], [[100, 3], [46, 3], [0, 2]], [[45, 4]], [[0, 4]]], [[[17, 1]], [[86, 2]], [[74, 3], [0, 2]], [[45, 4]], [[46, 5], [0, 4]], [[45, 6]], [[0, 6]]], [[[105, 1]], [[106, 0], [0, 1]]], [[[72, 1]], [[107, 2], [47, 3], [0, 1]], [[72, 4], [53, 4]], [[72, 5], [53, 5]], [[0, 4]], [[47, 3], [0, 5]]], [[[86, 1]], [[46, 2], [0, 1]], [[86, 1], [0, 2]]], [[[37, 2], [26, 2], [6, 2], [108, 1]], [[0, 1]], [[109, 1]]], [[[2, 0], [103, 1], [110, 0]], [[0, 1]]], [[[111, 1], [112, 1], [113, 1], [114, 1], [115, 1]], [[0, 1]]], [[[29, 1]], [[73, 2]], [[74, 3]], [[72, 4]], [[70, 5]], [[71, 6]], [[116, 7], [0, 6]], [[70, 8]], [[71, 9]], [[0, 9]]], [[[30, 1], [22, 2]], [[117, 3]], [[0, 2]], [[52, 2]]], [[[118, 1]], [[46, 2], [0, 1]], [[118, 1], [0, 2]]], [[[4, 1]], [[22, 2]], [[119, 3]], [[70, 4]], [[71, 5]], [[0, 5]]], [[[28, 1]], [[22, 2]], [[46, 1], [0, 2]]], [[[32, 1]], [[45, 2]], [[70, 3]], [[71, 4]], [[116, 5], [120, 1], [0, 4]], [[70, 6]], [[71, 7]], [[0, 7]]], [[[22, 1]], [[100, 2], [0, 1]], [[22, 3]], [[0, 3]]], [[[121, 1]], [[46, 2], [0, 1]], [[121, 1], [0, 2]]], [[[31, 1]], [[97, 2], [102, 3]], [[25, 4]], [[97, 2], [25, 4], [102, 3]], [[122, 5], [42, 5], [30, 6]], [[0, 5]], [[122, 7]], [[52, 5]]], [[[25, 1]], [[123, 2]], [[0, 2]]], [[[124, 1], [125, 1]], [[0, 1]]], [[[11, 1]], [[70, 2], [126, 3]], [[45, 4]], [[70, 2]], [[0, 4]]], [[[29, 1]], [[73, 2]], [[74, 3]], [[127, 4]], [[128, 5], [0, 4]], [[0, 5]]], [[[32, 1]], [[77, 2]], [[128, 3], [0, 2]], [[0, 3]]], [[[129, 1], [130, 1]], [[0, 1]]], [[[45, 1]], [[129, 2], [46, 3], [0, 1]], [[0, 2]], [[45, 4], [0, 3]], [[46, 3], [0, 4]]], [[[7, 1], [131, 2]], [[40, 2]], [[0, 2]]], [[[11, 1]], [[70, 2], [126, 3]], [[77, 4]], [[70, 2]], [[0, 4]]], [[[132, 1], [75, 1]], [[0, 1]]], [[[133, 1]], [[134, 0], [0, 1]]], [[[30, 1]], [[52, 2], [126, 3]], [[0, 2]], [[52, 2]]], [[[24, 1]], [[0, 1]]], [[[135, 1]], [[44, 2], [136, 1], [0, 1]], [[109, 3]], [[0, 3]]], [[[12, 1]], [[45, 2], [137, 3], [0, 1]], [[46, 4], [0, 2]], [[45, 5]], [[45, 2], [0, 4]], [[46, 6], [0, 5]], [[45, 7]], [[46, 8], [0, 7]], [[45, 7], [0, 8]]], [[[5, 1]], [[45, 2], [0, 1]], [[46, 3], [0, 2]], [[45, 4]], [[46, 5], [0, 4]], [[45, 6]], [[0, 6]]], [[[20, 1]], [[72, 2], [0, 1]], [[0, 2]]], [[[138, 1]], [[139, 0], [137, 0], [0, 1]]], [[[140, 1]], [[2, 2], [141, 3]], [[0, 2]], [[140, 1], [2, 2]]], [[[70, 1]], [[45, 2], [0, 1]], [[0, 2]]], [[[142, 1], [143, 1], [144, 1], [145, 1], [146, 1], [147, 1], [148, 1], [149, 1], [150, 1], [151, 1]], [[0, 1]]], [[[1, 1], [3, 1]], [[0, 1]]], [[[45, 1], [70, 2], [102, 3]], [[70, 2], [0, 1]], [[45, 4], [152, 5], [0, 2]], [[102, 6]], [[152, 5], [0, 4]], [[0, 5]], [[102, 5]]], [[[153, 1]], [[46, 2], [0, 1]], [[153, 1], [0, 2]]], [[[1, 1], [2, 2]], [[0, 1]], [[154, 3]], [[110, 4]], [[155, 1], [110, 4]]], [[[109, 1]], [[156, 0], [42, 0], [157, 0], [158, 0], [0, 1]]], [[[75, 1], [159, 2]], [[32, 3], [0, 1]], [[0, 2]], [[75, 4]], [[116, 5]], [[45, 2]]], [[[45, 1]], [[46, 2], [0, 1]], [[45, 1], [0, 2]]], [[[45, 1]], [[46, 0], [0, 1]]], [[[45, 1]], [[48, 2], [46, 3], [0, 1]], [[0, 2]], [[45, 4], [0, 3]], [[46, 3], [0, 4]]], [[[77, 1]], [[46, 2], [0, 1]], [[77, 3]], [[46, 4], [0, 3]], [[77, 3], [0, 4]]], [[[30, 1], [102, 2], [14, 3]], [[52, 4], [98, 5]], [[22, 4]], [[160, 6]], [[0, 4]], [[52, 4]], [[51, 4]]], [[[16, 1]], [[70, 2]], [[71, 3]], [[161, 4], [162, 5]], [[70, 6]], [[70, 7]], [[71, 8]], [[71, 9]], [[161, 4], [116, 10], [162, 5], [0, 8]], [[0, 9]], [[70, 11]], [[71, 12]], [[162, 5], [0, 12]]], [[[42, 1], [118, 2], [44, 3]], [[22, 4]], [[47, 5], [46, 6], [0, 2]], [[22, 7]], [[46, 8], [0, 4]], [[45, 9]], [[42, 1], [118, 2], [44, 3], [0, 6]], [[0, 7]], [[44, 3]], [[46, 6], [0, 9]]], [[[18, 1]], [[45, 2]], [[70, 3]], [[71, 4]], [[116, 5], [0, 4]], [[70, 6]], [[71, 7]], [[0, 7]]], [[[45, 1]], [[100, 2], [0, 1]], [[86, 3]], [[0, 3]]], [[[36, 1]], [[163, 2]], [[70, 3], [46, 1]], [[71, 4]], [[0, 4]]], [[[164, 1]], [[165, 0], [0, 1]]], [[[27, 1]], [[72, 2], [0, 1]], [[0, 2]]], [[[53, 1]], [[0, 1]]]],
+  labels: [[0, 'EMPTY'], [320, null], [4, null], [272, null], [1, 'def'], [1, 'raise'], [32, null], [1, 'not'], [2, null], [26, null], [1, 'class'], [1, 'lambda'], [1, 'print'], [1, 'debugger'], [9, null], [25, null], [1, 'try'], [1, 'exec'], [1, 'while'], [3, null], [1, 'return'], [1, 'assert'], [1, null], [1, 'del'], [1, 'pass'], [1, 'import'], [15, null], [1, 'yield'], [1, 'global'], [1, 'for'], [7, null], [1, 'from'], [1, 'if'], [1, 'break'], [1, 'continue'], [50, null], [1, 'with'], [14, null], [319, null], [19, null], [309, null], [1, 'and'], [16, null], [260, null], [36, null], [328, null], [12, null], [22, null], [267, null], [327, null], [308, null], [10, null], [8, null], [340, null], [331, null], [27, null], [279, null], [330, null], [46, null], [39, null], [41, null], [47, null], [42, null], [43, null], [37, null], [44, null], [49, null], [45, null], [38, null], [40, null], [11, null], [326, null], [329, null], [289, null], [1, 'in'], [312, null], [269, null], [311, null], [268, null], [29, null], [21, null], [28, null], [30, null], [1, 'is'], [31, null], [20, null], [287, null], [270, null], [334, null], [298, null], [293, null], [266, null], [338, null], [336, null], [296, null], [275, null], [277, null], [282, null], [259, null], [276, null], [1, 'as'], [280, null], [23, null], [0, null], [1, 'except'], [339, null], [18, null], [264, null], [315, null], [290, null], [323, null], [265, null], [273, null], [317, null], [318, null], [341, null], [1, 'else'], [295, null], [294, null], [313, null], [1, 'elif'], [299, null], [300, null], [281, null], [302, null], [301, null], [335, null], [332, null], [307, null], [305, null], [306, null], [271, null], [310, null], [258, null], [1, 'or'], [263, null], [333, null], [35, null], [261, null], [34, null], [322, null], [13, null], [292, null], [278, null], [288, null], [314, null], [316, null], [262, null], [286, null], [297, null], [303, null], [274, null], [321, null], [324, null], [5, null], [6, null], [48, null], [17, null], [24, null], [304, null], [325, null], [285, null], [1, 'finally'], [337, null], [257, null], [33, null]],
+  keywords: {
+    'and': 41,
+    'as': 100,
+    'assert': 21,
+    'break': 33,
+    'class': 10,
+    'continue': 34,
+    'debugger': 13,
+    'def': 4,
+    'del': 23,
+    'elif': 120,
+    'else': 116,
+    'except': 104,
+    'exec': 17,
+    'finally': 162,
+    'for': 29,
+    'from': 31,
+    'global': 28,
+    'if': 32,
+    'import': 25,
+    'in': 74,
+    'is': 83,
+    'lambda': 11,
+    'not': 7,
+    'or': 134,
+    'pass': 24,
+    'print': 12,
+    'raise': 5,
+    'return': 20,
+    'try': 16,
+    'while': 18,
+    'with': 36,
+    'yield': 27
+  },
+  tokens: {
+    0: 103,
+    1: 22,
+    2: 8,
+    3: 19,
+    4: 2,
+    5: 154,
+    6: 155,
+    7: 30,
+    8: 52,
+    9: 14,
+    10: 51,
+    11: 70,
+    12: 46,
+    13: 141,
+    14: 37,
+    15: 26,
+    16: 42,
+    17: 157,
+    18: 106,
+    19: 39,
+    20: 85,
+    21: 80,
+    22: 47,
+    23: 102,
+    24: 158,
+    25: 15,
+    26: 9,
+    27: 55,
+    28: 81,
+    29: 79,
+    30: 82,
+    31: 84,
+    32: 6,
+    33: 165,
+    34: 139,
+    35: 137,
+    36: 44,
+    37: 64,
+    38: 68,
+    39: 59,
+    40: 69,
+    41: 60,
+    42: 62,
+    43: 63,
+    44: 65,
+    45: 67,
+    46: 58,
+    47: 61,
+    48: 156,
+    49: 66,
+    50: 35
+  },
+  start: 256
+};
+
+/* ---- /Users/rob/skulpty/lib/../node_modules/skulpt/src/parser.js ---- */
+
+// low level parser to a concrete syntax tree, derived from cpython's lib2to3
+
+/**
+ *
+ * @constructor
+ * @param {Object} grammar
+ *
+ * p = new Parser(grammar);
+ * p.setup([start]);
+ * foreach input token:
+ *     if p.addtoken(...):
+ *         break
+ * root = p.rootnode
+ *
+ * can throw SyntaxError
+ */
+function Parser(filename, grammar) {
+  this.filename = filename;
+  this.grammar = grammar;
+  this.p_flags = 0;
+  return this;
+}
+
+// all possible parser flags
+Parser.FUTURE_PRINT_FUNCTION = "print_function";
+Parser.FUTURE_UNICODE_LITERALS = "unicode_literals";
+Parser.FUTURE_DIVISION = "division";
+Parser.FUTURE_ABSOLUTE_IMPORT = "absolute_import";
+Parser.FUTURE_WITH_STATEMENT = "with_statement";
+Parser.FUTURE_NESTED_SCOPES = "nested_scopes";
+Parser.FUTURE_GENERATORS = "generators";
+Parser.CO_FUTURE_PRINT_FUNCTION = 0x10000;
+Parser.CO_FUTURE_UNICODE_LITERALS = 0x20000;
+Parser.CO_FUTURE_DIVISON = 0x2000;
+Parser.CO_FUTURE_ABSOLUTE_IMPORT = 0x4000;
+Parser.CO_FUTURE_WITH_STATEMENT = 0x8000;
+Parser.prototype.setup = function (start) {
+  var stackentry;
+  var newnode;
+  start = start || this.grammar.start;
+  //print("START:"+start);
+
+  newnode = {
+    type: start,
+    value: null,
+    context: null,
+    children: []
+  };
+  stackentry = {
+    dfa: this.grammar.dfas[start],
+    state: 0,
+    node: newnode
+  };
+  this.stack = [stackentry];
+  this.used_names = {};
+};
+function findInDfa(a, obj) {
+  var i = a.length;
+  while (i--) {
+    if (a[i][0] === obj[0] && a[i][1] === obj[1]) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Add a token; return true if we're done
+Parser.prototype.addtoken = function (type, value, context) {
+  var errline;
+  var itsfirst;
+  var itsdfa;
+  var state;
+  var v;
+  var t;
+  var newstate;
+  var i;
+  var a;
+  var arcs;
+  var first;
+  var states;
+  var tp;
+  var ilabel = this.classify(type, value, context);
+  //print("ilabel:"+ilabel);
+
+  OUTERWHILE: while (true) {
+    tp = this.stack[this.stack.length - 1];
+    states = tp.dfa[0];
+    first = tp.dfa[1];
+    arcs = states[tp.state];
+
+    // look for a state with this label
+    for (a = 0; a < arcs.length; ++a) {
+      i = arcs[a][0];
+      newstate = arcs[a][1];
+      t = this.grammar.labels[i][0];
+      v = this.grammar.labels[i][1];
+      if (ilabel === i) {
+        // look it up in the list of labels
+        goog.asserts.assert(t < 256);
+        // shift a token; we're done with it
+        this.shift(type, value, newstate, context);
+        // pop while we are in an accept-only state
+        state = newstate;
+        //print("before:"+JSON.stringify(states[state]) + ":state:"+state+":"+JSON.stringify(states[state]));
+        /* jshint ignore:start */
+        while (states[state].length === 1 && states[state][0][0] === 0 && states[state][0][1] === state) {
+          // states[state] == [(0, state)])
+          this.pop();
+          //print("in after pop:"+JSON.stringify(states[state]) + ":state:"+state+":"+JSON.stringify(states[state]));
+          if (this.stack.length === 0) {
+            // done!
+            return true;
+          }
+          tp = this.stack[this.stack.length - 1];
+          state = tp.state;
+          states = tp.dfa[0];
+          first = tp.dfa[1];
+          //print(JSON.stringify(states), JSON.stringify(first));
+          //print("bottom:"+JSON.stringify(states[state]) + ":state:"+state+":"+JSON.stringify(states[state]));
+        }
+        /* jshint ignore:end */
+        // done with this token
+        //print("DONE, return false");
+        return false;
+      } else if (t >= 256) {
+        itsdfa = this.grammar.dfas[t];
+        itsfirst = itsdfa[1];
+        if (itsfirst.hasOwnProperty(ilabel)) {
+          // push a symbol
+          this.push(t, this.grammar.dfas[t], newstate, context);
+          continue OUTERWHILE;
+        }
+      }
+    }
+
+    //print("findInDfa: " + JSON.stringify(arcs)+" vs. " + tp.state);
+    if (findInDfa(arcs, [0, tp.state])) {
+      // an accepting state, pop it and try somethign else
+      //print("WAA");
+      this.pop();
+      if (this.stack.length === 0) {
+        throw new Sk.builtin.SyntaxError("too much input", this.filename);
+      }
+    } else {
+      // no transition
+      errline = context[0][0];
+      var that = this;
+      var ar = arcs.map(function (a) {
+        var i = a[0];
+        var t = that.grammar.labels[i][0];
+        return Sk.nameForToken(t);
+      });
+      var extra = {
+        kind: "DAG_MISS",
+        expected: ar,
+        found: Sk.nameForToken(type),
+        found_val: value,
+        inside: Sk.nameForToken(tp.node.type),
+        node: tp.node,
+        parent: this.stack.length > 1 ? this.stack[this.stack.length - 2].node : undefined
+      };
+      var reason = "expected " + ar.join(', ') + " but found " + extra.found + " while parsing " + extra.inside;
+      throw new Sk.builtin.SyntaxError(reason, this.filename, errline, context, extra);
+    }
+  }
+};
+
+// turn a token into a label
+Parser.prototype.classify = function (type, value, context) {
+  var ilabel;
+  if (type === Sk.Tokenizer.Tokens.T_NAME) {
+    this.used_names[value] = true;
+    ilabel = this.grammar.keywords.hasOwnProperty(value) && this.grammar.keywords[value];
+
+    /* Check for handling print as an builtin function */
+    if (value === "print" && (this.p_flags & Parser.CO_FUTURE_PRINT_FUNCTION || Sk.python3 === true)) {
+      ilabel = false; // ilabel determines if the value is a keyword
+    }
+
+    if (ilabel) {
+      //print("is keyword");
+      return ilabel;
+    }
+  }
+  ilabel = this.grammar.tokens.hasOwnProperty(type) && this.grammar.tokens[type];
+  if (!ilabel) {
+    // throw new Sk.builtin.SyntaxError("bad token", type, value, context);
+    // Questionable modification to put line number in position 2
+    // like everywhere else and filename in position 1.
+    var extra = {
+      kind: "CLASSIFY",
+      type: type,
+      value: value
+    };
+    throw new Sk.builtin.SyntaxError("bad token", this.filename, context[0][0], context, extra);
+  }
+  return ilabel;
+};
+
+// shift a token
+Parser.prototype.shift = function (type, value, newstate, context) {
+  var dfa = this.stack[this.stack.length - 1].dfa;
+  var state = this.stack[this.stack.length - 1].state;
+  var node = this.stack[this.stack.length - 1].node;
+  //print("context", context);
+  var newnode = {
+    type: type,
+    value: value,
+    lineno: context[0][0],
+    // throwing away end here to match cpython
+    col_offset: context[0][1],
+    children: null
+  };
+  if (newnode) {
+    node.children.push(newnode);
+  }
+  this.stack[this.stack.length - 1] = {
+    dfa: dfa,
+    state: newstate,
+    node: node
+  };
+};
+
+// push a nonterminal
+Parser.prototype.push = function (type, newdfa, newstate, context) {
+  var dfa = this.stack[this.stack.length - 1].dfa;
+  var node = this.stack[this.stack.length - 1].node;
+  var newnode = {
+    type: type,
+    value: null,
+    lineno: context[0][0],
+    // throwing away end here to match cpython
+    col_offset: context[0][1],
+    children: []
+  };
+  this.stack[this.stack.length - 1] = {
+    dfa: dfa,
+    state: newstate,
+    node: node
+  };
+  this.stack.push({
+    dfa: newdfa,
+    state: 0,
+    node: newnode
+  });
+};
+
+//var ac = 0;
+//var bc = 0;
+
+// pop a nonterminal
+Parser.prototype.pop = function () {
+  var node;
+  var pop = this.stack.pop();
+  var newnode = pop.node;
+  //print("POP");
+  if (newnode) {
+    //print("A", ac++, newnode.type);
+    //print("stacklen:"+this.stack.length);
+    if (this.stack.length !== 0) {
+      //print("B", bc++);
+      node = this.stack[this.stack.length - 1].node;
+      node.children.push(newnode);
+    } else {
+      //print("C");
+      this.rootnode = newnode;
+      this.rootnode.used_names = this.used_names;
+    }
+  }
+};
+
+/**
+ * parser for interactive input. returns a function that should be called with
+ * lines of input as they are entered. the function will return false
+ * until the input is complete, when it will return the rootnode of the parse.
+ *
+ * @param {string} filename
+ * @param {string=} style root of parse tree (optional)
+ */
+function makeParser(filename, style) {
+  var tokenizer;
+  var T_OP;
+  var T_NL;
+  var T_COMMENT;
+  var prefix;
+  var column;
+  var lineno;
+  var p;
+  if (style === undefined) {
+    style = "file_input";
+  }
+  p = new Parser(filename, Sk.ParseTables);
+  // for closure's benefit
+  if (style === "file_input") {
+    p.setup(Sk.ParseTables.sym.file_input);
+  } else {
+    goog.asserts.fail("todo;");
+  }
+  lineno = 1;
+  column = 0;
+  prefix = "";
+  T_COMMENT = Sk.Tokenizer.Tokens.T_COMMENT;
+  T_NL = Sk.Tokenizer.Tokens.T_NL;
+  T_OP = Sk.Tokenizer.Tokens.T_OP;
+  tokenizer = new Sk.Tokenizer(filename, style === "single_input", function (type, value, start, end, line) {
+    var s_lineno = start[0];
+    var s_column = start[1];
+    /*
+     if (s_lineno !== lineno && s_column !== column)
+     {
+     // todo; update prefix and line/col
+     }
+     */
+    if (type === T_COMMENT || type === T_NL) {
+      prefix += value;
+      lineno = end[0];
+      column = end[1];
+      if (value[value.length - 1] === "\n") {
+        lineno += 1;
+        column = 0;
+      }
+      //print("  not calling addtoken");
+      return undefined;
+    }
+    if (type === T_OP) {
+      type = Sk.OpMap[value];
+    }
+    if (p.addtoken(type, value, [start, end, line])) {
+      return true;
+    }
+  });
+
+  // create parser function
+  var parseFunc = function (line) {
+    var ret = tokenizer.generateTokens(line);
+    //print("tok:"+ret);
+    if (ret) {
+      if (ret !== "done") {
+        throw new Sk.builtin.SyntaxError("incomplete input", this.filename);
+      }
+      return p.rootnode;
+    }
+    return false;
+  };
+
+  // set flags, and return
+  parseFunc.p_flags = p.p_flags;
+  return parseFunc;
+}
+Sk.parse = function parse(filename, input) {
+  var i;
+  var ret;
+  var lines;
+  var parseFunc = makeParser(filename);
+  if (input.substr(input.length - 1, 1) !== "\n") {
+    input += "\n";
+  }
+  //print("input:"+input);
+  lines = input.split("\n");
+  for (i = 0; i < lines.length; ++i) {
+    ret = parseFunc(lines[i] + (i === lines.length - 1 ? "" : "\n"));
+  }
+
+  /*
+   * Small adjustments here in order to return th flags and the cst
+   */
+  return {
+    "cst": ret,
+    "flags": parseFunc.p_flags
+  };
+};
+Sk.parseTreeDump = function parseTreeDump(n, indent) {
+  //return JSON.stringify(n, null, 2);
+  var i;
+  var ret;
+  indent = indent || "";
+  ret = "";
+  ret += indent;
+  if (n.type >= 256) {
+    // non-term
+    ret += Sk.ParseTables.number2symbol[n.type] + "\n";
+    for (i = 0; i < n.children.length; ++i) {
+      ret += Sk.parseTreeDump(n.children[i], indent + "  ");
+    }
+  } else {
+    ret += Sk.Tokenizer.tokenNames[n.type] + ": " + new Sk.builtin.str(n.value)["$r"]().v + "\n";
+  }
+  return ret;
+};
+goog.exportSymbol("Sk.parse", Sk.parse);
+goog.exportSymbol("Sk.parseTreeDump", Sk.parseTreeDump);
+
+/* ---- /Users/rob/skulpty/lib/../node_modules/skulpt/gen/astnodes.js ---- */
+
+/* File automatically generated by ./asdl_js.py. */
+
+/* ----- expr_context ----- */
+/** @constructor */
+function Load() {}
+/** @constructor */
+function Store() {}
+/** @constructor */
+function Del() {}
+/** @constructor */
+function AugLoad() {}
+/** @constructor */
+function AugStore() {}
+/** @constructor */
+function Param() {}
+
+/* ----- boolop ----- */
+/** @constructor */
+function And() {}
+/** @constructor */
+function Or() {}
+
+/* ----- operator ----- */
+/** @constructor */
+function Add() {}
+/** @constructor */
+function Sub() {}
+/** @constructor */
+function Mult() {}
+/** @constructor */
+function Div() {}
+/** @constructor */
+function Mod() {}
+/** @constructor */
+function Pow() {}
+/** @constructor */
+function LShift() {}
+/** @constructor */
+function RShift() {}
+/** @constructor */
+function BitOr() {}
+/** @constructor */
+function BitXor() {}
+/** @constructor */
+function BitAnd() {}
+/** @constructor */
+function FloorDiv() {}
+
+/* ----- unaryop ----- */
+/** @constructor */
+function Invert() {}
+/** @constructor */
+function Not() {}
+/** @constructor */
+function UAdd() {}
+/** @constructor */
+function USub() {}
+
+/* ----- cmpop ----- */
+/** @constructor */
+function Eq() {}
+/** @constructor */
+function NotEq() {}
+/** @constructor */
+function Lt() {}
+/** @constructor */
+function LtE() {}
+/** @constructor */
+function Gt() {}
+/** @constructor */
+function GtE() {}
+/** @constructor */
+function Is() {}
+/** @constructor */
+function IsNot() {}
+/** @constructor */
+function In_() {}
+/** @constructor */
+function NotIn() {}
+
+/* ---------------------- */
+/* constructors for nodes */
+/* ---------------------- */
+
+/** @constructor */
+function Module( /* {asdl_seq *} */body) {
+  this.body = body;
+  return this;
+}
+
+/** @constructor */
+function Interactive( /* {asdl_seq *} */body) {
+  this.body = body;
+  return this;
+}
+
+/** @constructor */
+function Expression( /* {expr_ty} */body) {
+  goog.asserts.assert(body !== null && body !== undefined);
+  this.body = body;
+  return this;
+}
+
+/** @constructor */
+function Suite( /* {asdl_seq *} */body) {
+  this.body = body;
+  return this;
+}
+
+/** @constructor */
+function FunctionDef( /* {identifier} */name, /* {arguments__ty} */args,
+/*
+{asdl_seq *} */
+body, /* {asdl_seq *} */
+decorator_list, /* {int} */lineno, /* {int} */
+col_offset) {
+  goog.asserts.assert(name !== null && name !== undefined);
+  goog.asserts.assert(args !== null && args !== undefined);
+  this.name = name;
+  this.args = args;
+  this.body = body;
+  this.decorator_list = decorator_list;
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function ClassDef( /* {identifier} */name, /* {asdl_seq *} */bases,
+/*
+{asdl_seq *} */
+body, /* {asdl_seq *} */decorator_list, /* {int} */lineno, /* {int} */col_offset) {
+  goog.asserts.assert(name !== null && name !== undefined);
+  this.name = name;
+  this.bases = bases;
+  this.body = body;
+  this.decorator_list = decorator_list;
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function Return_( /* {expr_ty} */value, /* {int} */lineno, /* {int} */
+col_offset) {
+  this.value = value;
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function Delete_( /* {asdl_seq *} */targets, /* {int} */lineno, /* {int} */
+col_offset) {
+  this.targets = targets;
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function Assign( /* {asdl_seq *} */targets, /* {expr_ty} */value, /* {int} */
+lineno, /* {int} */col_offset) {
+  goog.asserts.assert(value !== null && value !== undefined);
+  this.targets = targets;
+  this.value = value;
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function AugAssign( /* {expr_ty} */target, /* {operator_ty} */op,
+/* {expr_ty}
+*/
+value, /* {int} */lineno, /* {int} */col_offset) {
+  goog.asserts.assert(target !== null && target !== undefined);
+  goog.asserts.assert(op !== null && op !== undefined);
+  goog.asserts.assert(value !== null && value !== undefined);
+  this.target = target;
+  this.op = op;
+  this.value = value;
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function Print( /* {expr_ty} */dest, /* {asdl_seq *} */values, /* {bool} */
+nl, /* {int} */lineno, /* {int} */col_offset) {
+  this.dest = dest;
+  this.values = values;
+  this.nl = nl;
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function For_( /* {expr_ty} */target, /* {expr_ty} */iter, /* {asdl_seq *} */
+body, /* {asdl_seq *} */orelse, /* {int} */lineno,
+/*
+{int} */
+col_offset) {
+  goog.asserts.assert(target !== null && target !== undefined);
+  goog.asserts.assert(iter !== null && iter !== undefined);
+  this.target = target;
+  this.iter = iter;
+  this.body = body;
+  this.orelse = orelse;
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function While_( /* {expr_ty} */test, /* {asdl_seq *} */body,
+/* {asdl_seq *}
+*/
+orelse, /* {int} */lineno, /* {int} */col_offset) {
+  goog.asserts.assert(test !== null && test !== undefined);
+  this.test = test;
+  this.body = body;
+  this.orelse = orelse;
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function If_( /* {expr_ty} */test, /* {asdl_seq *} */body, /* {asdl_seq *} */
+orelse, /* {int} */lineno, /* {int} */col_offset) {
+  goog.asserts.assert(test !== null && test !== undefined);
+  this.test = test;
+  this.body = body;
+  this.orelse = orelse;
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function With_( /* {expr_ty} */context_expr, /* {expr_ty} */optional_vars,
+/*
+{asdl_seq *} */
+body, /* {int} */lineno, /* {int} */
+col_offset) {
+  goog.asserts.assert(context_expr !== null && context_expr !== undefined);
+  this.context_expr = context_expr;
+  this.optional_vars = optional_vars;
+  this.body = body;
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function Raise( /* {expr_ty} */type, /* {expr_ty} */inst, /* {expr_ty} */
+tback, /* {int} */lineno, /* {int} */col_offset) {
+  this.type = type;
+  this.inst = inst;
+  this.tback = tback;
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function TryExcept( /* {asdl_seq *} */body, /* {asdl_seq *} */handlers,
+/*
+{asdl_seq *} */
+orelse, /* {int} */lineno, /* {int} */
+col_offset) {
+  this.body = body;
+  this.handlers = handlers;
+  this.orelse = orelse;
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function TryFinally( /* {asdl_seq *} */body, /* {asdl_seq *} */finalbody,
+/*
+{int} */
+lineno, /* {int} */col_offset) {
+  this.body = body;
+  this.finalbody = finalbody;
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function Assert( /* {expr_ty} */test, /* {expr_ty} */msg, /* {int} */lineno, /* {int} */col_offset) {
+  goog.asserts.assert(test !== null && test !== undefined);
+  this.test = test;
+  this.msg = msg;
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function Import_( /* {asdl_seq *} */names, /* {int} */lineno, /* {int} */
+col_offset) {
+  this.names = names;
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function ImportFrom( /* {identifier} */module, /* {asdl_seq *} */names,
+/*
+{int} */
+level, /* {int} */lineno, /* {int} */
+col_offset) {
+  goog.asserts.assert(module !== null && module !== undefined);
+  this.module = module;
+  this.names = names;
+  this.level = level;
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function Exec( /* {expr_ty} */body, /* {expr_ty} */globals, /* {expr_ty} */
+locals, /* {int} */lineno, /* {int} */col_offset) {
+  goog.asserts.assert(body !== null && body !== undefined);
+  this.body = body;
+  this.globals = globals;
+  this.locals = locals;
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function Global( /* {asdl_seq *} */names, /* {int} */lineno, /* {int} */
+col_offset) {
+  this.names = names;
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function Expr( /* {expr_ty} */value, /* {int} */lineno, /* {int} */col_offset) {
+  goog.asserts.assert(value !== null && value !== undefined);
+  this.value = value;
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function Pass( /* {int} */lineno, /* {int} */col_offset) {
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function Break_( /* {int} */lineno, /* {int} */col_offset) {
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function Continue_( /* {int} */lineno, /* {int} */col_offset) {
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function Debugger_( /* {int} */lineno, /* {int} */col_offset) {
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function BoolOp( /* {boolop_ty} */op, /* {asdl_seq *} */values, /* {int} */
+lineno, /* {int} */col_offset) {
+  goog.asserts.assert(op !== null && op !== undefined);
+  this.op = op;
+  this.values = values;
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function BinOp( /* {expr_ty} */left, /* {operator_ty} */op, /* {expr_ty} */
+right, /* {int} */lineno, /* {int} */col_offset) {
+  goog.asserts.assert(left !== null && left !== undefined);
+  goog.asserts.assert(op !== null && op !== undefined);
+  goog.asserts.assert(right !== null && right !== undefined);
+  this.left = left;
+  this.op = op;
+  this.right = right;
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function UnaryOp( /* {unaryop_ty} */op, /* {expr_ty} */operand, /* {int} */
+lineno, /* {int} */col_offset) {
+  goog.asserts.assert(op !== null && op !== undefined);
+  goog.asserts.assert(operand !== null && operand !== undefined);
+  this.op = op;
+  this.operand = operand;
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function Lambda( /* {arguments__ty} */args, /* {expr_ty} */body, /* {int} */
+lineno, /* {int} */col_offset) {
+  goog.asserts.assert(args !== null && args !== undefined);
+  goog.asserts.assert(body !== null && body !== undefined);
+  this.args = args;
+  this.body = body;
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function IfExp( /* {expr_ty} */test, /* {expr_ty} */body, /* {expr_ty} */
+orelse, /* {int} */lineno, /* {int} */col_offset) {
+  goog.asserts.assert(test !== null && test !== undefined);
+  goog.asserts.assert(body !== null && body !== undefined);
+  goog.asserts.assert(orelse !== null && orelse !== undefined);
+  this.test = test;
+  this.body = body;
+  this.orelse = orelse;
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function Dict( /* {asdl_seq *} */keys, /* {asdl_seq *} */values, /* {int} */
+lineno, /* {int} */col_offset) {
+  this.keys = keys;
+  this.values = values;
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function Set( /* {asdl_seq *} */elts, /* {int} */lineno, /* {int} */
+col_offset) {
+  this.elts = elts;
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function ListComp( /* {expr_ty} */elt, /* {asdl_seq *} */generators,
+/* {int}
+*/
+lineno, /* {int} */col_offset) {
+  goog.asserts.assert(elt !== null && elt !== undefined);
+  this.elt = elt;
+  this.generators = generators;
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function SetComp( /* {expr_ty} */elt, /* {asdl_seq *} */generators,
+/* {int}
+*/
+lineno, /* {int} */col_offset) {
+  goog.asserts.assert(elt !== null && elt !== undefined);
+  this.elt = elt;
+  this.generators = generators;
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function DictComp( /* {expr_ty} */key, /* {expr_ty} */value,
+/* {asdl_seq *}
+*/
+generators, /* {int} */lineno, /* {int} */
+col_offset) {
+  goog.asserts.assert(key !== null && key !== undefined);
+  goog.asserts.assert(value !== null && value !== undefined);
+  this.key = key;
+  this.value = value;
+  this.generators = generators;
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function GeneratorExp( /* {expr_ty} */elt, /* {asdl_seq *} */generators,
+/*
+{int} */
+lineno, /* {int} */col_offset) {
+  goog.asserts.assert(elt !== null && elt !== undefined);
+  this.elt = elt;
+  this.generators = generators;
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function Yield( /* {expr_ty} */value, /* {int} */lineno, /* {int} */
+col_offset) {
+  this.value = value;
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function Compare( /* {expr_ty} */left, /* {asdl_int_seq *} */ops,
+/* {asdl_seq
+*} */
+comparators, /* {int} */lineno, /* {int} */
+col_offset) {
+  goog.asserts.assert(left !== null && left !== undefined);
+  this.left = left;
+  this.ops = ops;
+  this.comparators = comparators;
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function Call( /* {expr_ty} */func, /* {asdl_seq *} */args, /* {asdl_seq *} */
+keywords, /* {expr_ty} */starargs, /* {expr_ty} */kwargs, /* {int} */lineno, /* {int} */col_offset) {
+  goog.asserts.assert(func !== null && func !== undefined);
+  this.func = func;
+  this.args = args;
+  this.keywords = keywords;
+  this.starargs = starargs;
+  this.kwargs = kwargs;
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function Repr( /* {expr_ty} */value, /* {int} */lineno, /* {int} */col_offset) {
+  goog.asserts.assert(value !== null && value !== undefined);
+  this.value = value;
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function Num( /* {object} */n, /* {int} */lineno, /* {int} */col_offset) {
+  goog.asserts.assert(n !== null && n !== undefined);
+  this.n = n;
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function Str( /* {string} */s, /* {int} */lineno, /* {int} */col_offset) {
+  goog.asserts.assert(s !== null && s !== undefined);
+  this.s = s;
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function Attribute( /* {expr_ty} */value, /* {identifier} */attr,
+/*
+{expr_context_ty} */
+ctx, /* {int} */lineno,
+/* {int}
+*/
+col_offset) {
+  goog.asserts.assert(value !== null && value !== undefined);
+  goog.asserts.assert(attr !== null && attr !== undefined);
+  goog.asserts.assert(ctx !== null && ctx !== undefined);
+  this.value = value;
+  this.attr = attr;
+  this.ctx = ctx;
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function Subscript( /* {expr_ty} */value, /* {slice_ty} */slice,
+/*
+{expr_context_ty} */
+ctx, /* {int} */lineno,
+/* {int}
+*/
+col_offset) {
+  goog.asserts.assert(value !== null && value !== undefined);
+  goog.asserts.assert(slice !== null && slice !== undefined);
+  goog.asserts.assert(ctx !== null && ctx !== undefined);
+  this.value = value;
+  this.slice = slice;
+  this.ctx = ctx;
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function Name( /* {identifier} */id, /* {expr_context_ty} */ctx, /* {int} */
+lineno, /* {int} */col_offset) {
+  goog.asserts.assert(id !== null && id !== undefined);
+  goog.asserts.assert(ctx !== null && ctx !== undefined);
+  this.id = id;
+  this.ctx = ctx;
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function List( /* {asdl_seq *} */elts, /* {expr_context_ty} */ctx, /* {int} */
+lineno, /* {int} */col_offset) {
+  goog.asserts.assert(ctx !== null && ctx !== undefined);
+  this.elts = elts;
+  this.ctx = ctx;
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function Tuple( /* {asdl_seq *} */elts, /* {expr_context_ty} */ctx,
+/* {int}
+*/
+lineno, /* {int} */col_offset) {
+  goog.asserts.assert(ctx !== null && ctx !== undefined);
+  this.elts = elts;
+  this.ctx = ctx;
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function Ellipsis() {
+  return this;
+}
+
+/** @constructor */
+function Slice( /* {expr_ty} */lower, /* {expr_ty} */upper, /* {expr_ty} */
+step) {
+  this.lower = lower;
+  this.upper = upper;
+  this.step = step;
+  return this;
+}
+
+/** @constructor */
+function ExtSlice( /* {asdl_seq *} */dims) {
+  this.dims = dims;
+  return this;
+}
+
+/** @constructor */
+function Index( /* {expr_ty} */value) {
+  goog.asserts.assert(value !== null && value !== undefined);
+  this.value = value;
+  return this;
+}
+
+/** @constructor */
+function comprehension( /* {expr_ty} */target, /* {expr_ty} */iter,
+/*
+{asdl_seq *} */
+ifs) {
+  goog.asserts.assert(target !== null && target !== undefined);
+  goog.asserts.assert(iter !== null && iter !== undefined);
+  this.target = target;
+  this.iter = iter;
+  this.ifs = ifs;
+  return this;
+}
+
+/** @constructor */
+function ExceptHandler( /* {expr_ty} */type, /* {expr_ty} */name,
+/* {asdl_seq
+*} */
+body, /* {int} */lineno, /* {int} */
+col_offset) {
+  this.type = type;
+  this.name = name;
+  this.body = body;
+  this.lineno = lineno;
+  this.col_offset = col_offset;
+  return this;
+}
+
+/** @constructor */
+function arguments_( /* {asdl_seq *} */args, /* {identifier} */vararg,
+/*
+{identifier} */
+kwarg, /* {asdl_seq *} */defaults) {
+  this.args = args;
+  this.vararg = vararg;
+  this.kwarg = kwarg;
+  this.defaults = defaults;
+  return this;
+}
+
+/** @constructor */
+function keyword( /* {identifier} */arg, /* {expr_ty} */value) {
+  goog.asserts.assert(arg !== null && arg !== undefined);
+  goog.asserts.assert(value !== null && value !== undefined);
+  this.arg = arg;
+  this.value = value;
+  return this;
+}
+
+/** @constructor */
+function alias( /* {identifier} */name, /* {identifier} */asname) {
+  goog.asserts.assert(name !== null && name !== undefined);
+  this.name = name;
+  this.asname = asname;
+  return this;
+}
+Module.prototype._astname = "Module";
+Module.prototype._fields = ["body", function (n) {
+  return n.body;
+}];
+Interactive.prototype._astname = "Interactive";
+Interactive.prototype._fields = ["body", function (n) {
+  return n.body;
+}];
+Expression.prototype._astname = "Expression";
+Expression.prototype._fields = ["body", function (n) {
+  return n.body;
+}];
+Suite.prototype._astname = "Suite";
+Suite.prototype._fields = ["body", function (n) {
+  return n.body;
+}];
+FunctionDef.prototype._astname = "FunctionDef";
+FunctionDef.prototype._fields = ["name", function (n) {
+  return n.name;
+}, "args", function (n) {
+  return n.args;
+}, "body", function (n) {
+  return n.body;
+}, "decorator_list", function (n) {
+  return n.decorator_list;
+}];
+ClassDef.prototype._astname = "ClassDef";
+ClassDef.prototype._fields = ["name", function (n) {
+  return n.name;
+}, "bases", function (n) {
+  return n.bases;
+}, "body", function (n) {
+  return n.body;
+}, "decorator_list", function (n) {
+  return n.decorator_list;
+}];
+Return_.prototype._astname = "Return";
+Return_.prototype._fields = ["value", function (n) {
+  return n.value;
+}];
+Delete_.prototype._astname = "Delete";
+Delete_.prototype._fields = ["targets", function (n) {
+  return n.targets;
+}];
+Assign.prototype._astname = "Assign";
+Assign.prototype._fields = ["targets", function (n) {
+  return n.targets;
+}, "value", function (n) {
+  return n.value;
+}];
+AugAssign.prototype._astname = "AugAssign";
+AugAssign.prototype._fields = ["target", function (n) {
+  return n.target;
+}, "op", function (n) {
+  return n.op;
+}, "value", function (n) {
+  return n.value;
+}];
+Print.prototype._astname = "Print";
+Print.prototype._fields = ["dest", function (n) {
+  return n.dest;
+}, "values", function (n) {
+  return n.values;
+}, "nl", function (n) {
+  return n.nl;
+}];
+For_.prototype._astname = "For";
+For_.prototype._fields = ["target", function (n) {
+  return n.target;
+}, "iter", function (n) {
+  return n.iter;
+}, "body", function (n) {
+  return n.body;
+}, "orelse", function (n) {
+  return n.orelse;
+}];
+While_.prototype._astname = "While";
+While_.prototype._fields = ["test", function (n) {
+  return n.test;
+}, "body", function (n) {
+  return n.body;
+}, "orelse", function (n) {
+  return n.orelse;
+}];
+If_.prototype._astname = "If";
+If_.prototype._fields = ["test", function (n) {
+  return n.test;
+}, "body", function (n) {
+  return n.body;
+}, "orelse", function (n) {
+  return n.orelse;
+}];
+With_.prototype._astname = "With";
+With_.prototype._fields = ["context_expr", function (n) {
+  return n.context_expr;
+}, "optional_vars", function (n) {
+  return n.optional_vars;
+}, "body", function (n) {
+  return n.body;
+}];
+Raise.prototype._astname = "Raise";
+Raise.prototype._fields = ["type", function (n) {
+  return n.type;
+}, "inst", function (n) {
+  return n.inst;
+}, "tback", function (n) {
+  return n.tback;
+}];
+TryExcept.prototype._astname = "TryExcept";
+TryExcept.prototype._fields = ["body", function (n) {
+  return n.body;
+}, "handlers", function (n) {
+  return n.handlers;
+}, "orelse", function (n) {
+  return n.orelse;
+}];
+TryFinally.prototype._astname = "TryFinally";
+TryFinally.prototype._fields = ["body", function (n) {
+  return n.body;
+}, "finalbody", function (n) {
+  return n.finalbody;
+}];
+Assert.prototype._astname = "Assert";
+Assert.prototype._fields = ["test", function (n) {
+  return n.test;
+}, "msg", function (n) {
+  return n.msg;
+}];
+Import_.prototype._astname = "Import";
+Import_.prototype._fields = ["names", function (n) {
+  return n.names;
+}];
+ImportFrom.prototype._astname = "ImportFrom";
+ImportFrom.prototype._fields = ["module", function (n) {
+  return n.module;
+}, "names", function (n) {
+  return n.names;
+}, "level", function (n) {
+  return n.level;
+}];
+Exec.prototype._astname = "Exec";
+Exec.prototype._fields = ["body", function (n) {
+  return n.body;
+}, "globals", function (n) {
+  return n.globals;
+}, "locals", function (n) {
+  return n.locals;
+}];
+Global.prototype._astname = "Global";
+Global.prototype._fields = ["names", function (n) {
+  return n.names;
+}];
+Expr.prototype._astname = "Expr";
+Expr.prototype._fields = ["value", function (n) {
+  return n.value;
+}];
+Pass.prototype._astname = "Pass";
+Pass.prototype._fields = [];
+Break_.prototype._astname = "Break";
+Break_.prototype._fields = [];
+Continue_.prototype._astname = "Continue";
+Continue_.prototype._fields = [];
+Debugger_.prototype._astname = "Debugger";
+Debugger_.prototype._fields = [];
+BoolOp.prototype._astname = "BoolOp";
+BoolOp.prototype._fields = ["op", function (n) {
+  return n.op;
+}, "values", function (n) {
+  return n.values;
+}];
+BinOp.prototype._astname = "BinOp";
+BinOp.prototype._fields = ["left", function (n) {
+  return n.left;
+}, "op", function (n) {
+  return n.op;
+}, "right", function (n) {
+  return n.right;
+}];
+UnaryOp.prototype._astname = "UnaryOp";
+UnaryOp.prototype._fields = ["op", function (n) {
+  return n.op;
+}, "operand", function (n) {
+  return n.operand;
+}];
+Lambda.prototype._astname = "Lambda";
+Lambda.prototype._fields = ["args", function (n) {
+  return n.args;
+}, "body", function (n) {
+  return n.body;
+}];
+IfExp.prototype._astname = "IfExp";
+IfExp.prototype._fields = ["test", function (n) {
+  return n.test;
+}, "body", function (n) {
+  return n.body;
+}, "orelse", function (n) {
+  return n.orelse;
+}];
+Dict.prototype._astname = "Dict";
+Dict.prototype._fields = ["keys", function (n) {
+  return n.keys;
+}, "values", function (n) {
+  return n.values;
+}];
+Set.prototype._astname = "Set";
+Set.prototype._fields = ["elts", function (n) {
+  return n.elts;
+}];
+ListComp.prototype._astname = "ListComp";
+ListComp.prototype._fields = ["elt", function (n) {
+  return n.elt;
+}, "generators", function (n) {
+  return n.generators;
+}];
+SetComp.prototype._astname = "SetComp";
+SetComp.prototype._fields = ["elt", function (n) {
+  return n.elt;
+}, "generators", function (n) {
+  return n.generators;
+}];
+DictComp.prototype._astname = "DictComp";
+DictComp.prototype._fields = ["key", function (n) {
+  return n.key;
+}, "value", function (n) {
+  return n.value;
+}, "generators", function (n) {
+  return n.generators;
+}];
+GeneratorExp.prototype._astname = "GeneratorExp";
+GeneratorExp.prototype._fields = ["elt", function (n) {
+  return n.elt;
+}, "generators", function (n) {
+  return n.generators;
+}];
+Yield.prototype._astname = "Yield";
+Yield.prototype._fields = ["value", function (n) {
+  return n.value;
+}];
+Compare.prototype._astname = "Compare";
+Compare.prototype._fields = ["left", function (n) {
+  return n.left;
+}, "ops", function (n) {
+  return n.ops;
+}, "comparators", function (n) {
+  return n.comparators;
+}];
+Call.prototype._astname = "Call";
+Call.prototype._fields = ["func", function (n) {
+  return n.func;
+}, "args", function (n) {
+  return n.args;
+}, "keywords", function (n) {
+  return n.keywords;
+}, "starargs", function (n) {
+  return n.starargs;
+}, "kwargs", function (n) {
+  return n.kwargs;
+}];
+Repr.prototype._astname = "Repr";
+Repr.prototype._fields = ["value", function (n) {
+  return n.value;
+}];
+Num.prototype._astname = "Num";
+Num.prototype._fields = ["n", function (n) {
+  return n.n;
+}];
+Str.prototype._astname = "Str";
+Str.prototype._fields = ["s", function (n) {
+  return n.s;
+}];
+Attribute.prototype._astname = "Attribute";
+Attribute.prototype._fields = ["value", function (n) {
+  return n.value;
+}, "attr", function (n) {
+  return n.attr;
+}, "ctx", function (n) {
+  return n.ctx;
+}];
+Subscript.prototype._astname = "Subscript";
+Subscript.prototype._fields = ["value", function (n) {
+  return n.value;
+}, "slice", function (n) {
+  return n.slice;
+}, "ctx", function (n) {
+  return n.ctx;
+}];
+Name.prototype._astname = "Name";
+Name.prototype._fields = ["id", function (n) {
+  return n.id;
+}, "ctx", function (n) {
+  return n.ctx;
+}];
+List.prototype._astname = "List";
+List.prototype._fields = ["elts", function (n) {
+  return n.elts;
+}, "ctx", function (n) {
+  return n.ctx;
+}];
+Tuple.prototype._astname = "Tuple";
+Tuple.prototype._fields = ["elts", function (n) {
+  return n.elts;
+}, "ctx", function (n) {
+  return n.ctx;
+}];
+Load.prototype._astname = "Load";
+Load.prototype._isenum = true;
+Store.prototype._astname = "Store";
+Store.prototype._isenum = true;
+Del.prototype._astname = "Del";
+Del.prototype._isenum = true;
+AugLoad.prototype._astname = "AugLoad";
+AugLoad.prototype._isenum = true;
+AugStore.prototype._astname = "AugStore";
+AugStore.prototype._isenum = true;
+Param.prototype._astname = "Param";
+Param.prototype._isenum = true;
+Ellipsis.prototype._astname = "Ellipsis";
+Ellipsis.prototype._fields = [];
+Slice.prototype._astname = "Slice";
+Slice.prototype._fields = ["lower", function (n) {
+  return n.lower;
+}, "upper", function (n) {
+  return n.upper;
+}, "step", function (n) {
+  return n.step;
+}];
+ExtSlice.prototype._astname = "ExtSlice";
+ExtSlice.prototype._fields = ["dims", function (n) {
+  return n.dims;
+}];
+Index.prototype._astname = "Index";
+Index.prototype._fields = ["value", function (n) {
+  return n.value;
+}];
+And.prototype._astname = "And";
+And.prototype._isenum = true;
+Or.prototype._astname = "Or";
+Or.prototype._isenum = true;
+Add.prototype._astname = "Add";
+Add.prototype._isenum = true;
+Sub.prototype._astname = "Sub";
+Sub.prototype._isenum = true;
+Mult.prototype._astname = "Mult";
+Mult.prototype._isenum = true;
+Div.prototype._astname = "Div";
+Div.prototype._isenum = true;
+Mod.prototype._astname = "Mod";
+Mod.prototype._isenum = true;
+Pow.prototype._astname = "Pow";
+Pow.prototype._isenum = true;
+LShift.prototype._astname = "LShift";
+LShift.prototype._isenum = true;
+RShift.prototype._astname = "RShift";
+RShift.prototype._isenum = true;
+BitOr.prototype._astname = "BitOr";
+BitOr.prototype._isenum = true;
+BitXor.prototype._astname = "BitXor";
+BitXor.prototype._isenum = true;
+BitAnd.prototype._astname = "BitAnd";
+BitAnd.prototype._isenum = true;
+FloorDiv.prototype._astname = "FloorDiv";
+FloorDiv.prototype._isenum = true;
+Invert.prototype._astname = "Invert";
+Invert.prototype._isenum = true;
+Not.prototype._astname = "Not";
+Not.prototype._isenum = true;
+UAdd.prototype._astname = "UAdd";
+UAdd.prototype._isenum = true;
+USub.prototype._astname = "USub";
+USub.prototype._isenum = true;
+Eq.prototype._astname = "Eq";
+Eq.prototype._isenum = true;
+NotEq.prototype._astname = "NotEq";
+NotEq.prototype._isenum = true;
+Lt.prototype._astname = "Lt";
+Lt.prototype._isenum = true;
+LtE.prototype._astname = "LtE";
+LtE.prototype._isenum = true;
+Gt.prototype._astname = "Gt";
+Gt.prototype._isenum = true;
+GtE.prototype._astname = "GtE";
+GtE.prototype._isenum = true;
+Is.prototype._astname = "Is";
+Is.prototype._isenum = true;
+IsNot.prototype._astname = "IsNot";
+IsNot.prototype._isenum = true;
+In_.prototype._astname = "In";
+In_.prototype._isenum = true;
+NotIn.prototype._astname = "NotIn";
+NotIn.prototype._isenum = true;
+comprehension.prototype._astname = "comprehension";
+comprehension.prototype._fields = ["target", function (n) {
+  return n.target;
+}, "iter", function (n) {
+  return n.iter;
+}, "ifs", function (n) {
+  return n.ifs;
+}];
+ExceptHandler.prototype._astname = "ExceptHandler";
+ExceptHandler.prototype._fields = ["type", function (n) {
+  return n.type;
+}, "name", function (n) {
+  return n.name;
+}, "body", function (n) {
+  return n.body;
+}];
+arguments_.prototype._astname = "arguments";
+arguments_.prototype._fields = ["args", function (n) {
+  return n.args;
+}, "vararg", function (n) {
+  return n.vararg;
+}, "kwarg", function (n) {
+  return n.kwarg;
+}, "defaults", function (n) {
+  return n.defaults;
+}];
+keyword.prototype._astname = "keyword";
+keyword.prototype._fields = ["arg", function (n) {
+  return n.arg;
+}, "value", function (n) {
+  return n.value;
+}];
+alias.prototype._astname = "alias";
+alias.prototype._fields = ["name", function (n) {
+  return n.name;
+}, "asname", function (n) {
+  return n.asname;
+}];
+
+/* ---- /Users/rob/skulpty/lib/../node_modules/skulpt/src/ast.js ---- */
+
+//
+// This is pretty much a straight port of ast.c from CPython 2.6.5.
+//
+// The previous version was easier to work with and more JS-ish, but having a
+// somewhat different ast structure than cpython makes testing more difficult.
+//
+// This way, we can use a dump from the ast module on any arbitrary python
+// code and know that we're the same up to ast level, at least.
+//
+
+var SYM = Sk.ParseTables.sym;
+var TOK = Sk.Tokenizer.Tokens;
+var COMP_GENEXP = 0;
+var COMP_SETCOMP = 1;
+
+/** @constructor */
+function Compiling(encoding, filename, c_flags) {
+  this.c_encoding = encoding;
+  this.c_filename = filename;
+  this.c_flags = c_flags || 0;
+}
+
+/**
+ * @return {number}
+ */
+function NCH(n) {
+  goog.asserts.assert(n !== undefined);
+  if (n.children === null) {
+    return 0;
+  }
+  return n.children.length;
+}
+function CHILD(n, i) {
+  goog.asserts.assert(n !== undefined);
+  goog.asserts.assert(i !== undefined);
+  return n.children[i];
+}
+function REQ(n, type) {
+  goog.asserts.assert(n.type === type, "node wasn't expected type");
+}
+function strobj(s) {
+  goog.asserts.assert(typeof s === "string", "expecting string, got " + typeof s);
+  return new Sk.builtin.str(s);
+}
+
+/** @return {number} */
+function numStmts(n) {
+  var ch;
+  var i;
+  var cnt;
+  switch (n.type) {
+    case SYM.single_input:
+      if (CHILD(n, 0).type === TOK.T_NEWLINE) {
+        return 0;
+      } else {
+        return numStmts(CHILD(n, 0));
+      }
+    case SYM.file_input:
+      cnt = 0;
+      for (i = 0; i < NCH(n); ++i) {
+        ch = CHILD(n, i);
+        if (ch.type === SYM.stmt) {
+          cnt += numStmts(ch);
+        }
+      }
+      return cnt;
+    case SYM.stmt:
+      return numStmts(CHILD(n, 0));
+    case SYM.compound_stmt:
+      return 1;
+    case SYM.simple_stmt:
+      return Math.floor(NCH(n) / 2);
+    // div 2 is to remove count of ;s
+    case SYM.suite:
+      if (NCH(n) === 1) {
+        return numStmts(CHILD(n, 0));
+      } else {
+        cnt = 0;
+        for (i = 2; i < NCH(n) - 1; ++i) {
+          cnt += numStmts(CHILD(n, i));
+        }
+        return cnt;
+      }
+      break;
+    default:
+      goog.asserts.fail("Non-statement found");
+  }
+  return 0;
+}
+function forbiddenCheck(c, n, x, lineno) {
+  if (x === "None") {
+    throw new Sk.builtin.SyntaxError("assignment to None", c.c_filename, lineno, [], {
+      node: n
+    });
+  }
+  if (x === "True" || x === "False") {
+    throw new Sk.builtin.SyntaxError("assignment to True or False is forbidden", c.c_filename, lineno, [], {
+      node: n
+    });
+  }
+}
+
+/**
+ * Set the context ctx for e, recursively traversing e.
+ *
+ * Only sets context for expr kinds that can appear in assignment context as
+ * per the asdl file.
+ */
+function setContext(c, e, ctx, n) {
+  var i;
+  var exprName;
+  var s;
+  goog.asserts.assert(ctx !== AugStore && ctx !== AugLoad);
+  s = null;
+  exprName = null;
+  switch (e.constructor) {
+    case Attribute:
+    case Name:
+      if (ctx === Store) {
+        forbiddenCheck(c, n, e.attr, n.lineno);
+      }
+      e.ctx = ctx;
+      break;
+    case Subscript:
+      e.ctx = ctx;
+      break;
+    case List:
+      e.ctx = ctx;
+      s = e.elts;
+      break;
+    case Tuple:
+      if (e.elts.length === 0) {
+        throw new Sk.builtin.SyntaxError("can't assign to ()", c.c_filename, n.lineno, ctx, {
+          node: n
+        });
+      }
+      e.ctx = ctx;
+      s = e.elts;
+      break;
+    case Lambda:
+      exprName = "lambda";
+      break;
+    case Call:
+      exprName = "function call";
+      break;
+    case BoolOp:
+    case BinOp:
+    case UnaryOp:
+      exprName = "operator";
+      break;
+    case GeneratorExp:
+      exprName = "generator expression";
+      break;
+    case Yield:
+      exprName = "yield expression";
+      break;
+    case ListComp:
+      exprName = "list comprehension";
+      break;
+    case SetComp:
+      exprName = "set comprehension";
+      break;
+    case DictComp:
+      exprName = "dict comprehension";
+      break;
+    case Dict:
+    case Set:
+    case Num:
+    case Str:
+      exprName = "literal";
+      break;
+    case Compare:
+      exprName = "comparison";
+      break;
+    case Repr:
+      exprName = "repr";
+      break;
+    case IfExp:
+      exprName = "conditional expression";
+      break;
+    default:
+      goog.asserts.fail("unhandled expression in assignment");
+  }
+  if (exprName) {
+    throw new Sk.builtin.SyntaxError("can't " + (ctx === Store ? "assign to" : "delete") + " " + exprName, c.c_filename, n.lineno, [], {
+      node: n
+    });
+  }
+  if (s) {
+    for (i = 0; i < s.length; ++i) {
+      setContext(c, s[i], ctx, n);
+    }
+  }
+}
+var operatorMap = {};
+(function () {
+  operatorMap[TOK.T_VBAR] = BitOr;
+  operatorMap[TOK.T_CIRCUMFLEX] = BitXor;
+  operatorMap[TOK.T_AMPER] = BitAnd;
+  operatorMap[TOK.T_LEFTSHIFT] = LShift;
+  operatorMap[TOK.T_RIGHTSHIFT] = RShift;
+  operatorMap[TOK.T_PLUS] = Add;
+  operatorMap[TOK.T_MINUS] = Sub;
+  operatorMap[TOK.T_STAR] = Mult;
+  operatorMap[TOK.T_SLASH] = Div;
+  operatorMap[TOK.T_DOUBLESLASH] = FloorDiv;
+  operatorMap[TOK.T_PERCENT] = Mod;
+})();
+function getOperator(n) {
+  goog.asserts.assert(operatorMap[n.type] !== undefined);
+  return operatorMap[n.type];
+}
+function astForCompOp(c, n) {
+  /* comp_op: '<'|'>'|'=='|'>='|'<='|'<>'|'!='|'in'|'not' 'in'|'is'
+   |'is' 'not'
+   */
+  REQ(n, SYM.comp_op);
+  if (NCH(n) === 1) {
+    n = CHILD(n, 0);
+    switch (n.type) {
+      case TOK.T_LESS:
+        return Lt;
+      case TOK.T_GREATER:
+        return Gt;
+      case TOK.T_EQEQUAL:
+        return Eq;
+      case TOK.T_LESSEQUAL:
+        return LtE;
+      case TOK.T_GREATEREQUAL:
+        return GtE;
+      case TOK.T_NOTEQUAL:
+        return NotEq;
+      case TOK.T_NAME:
+        if (n.value === "in") {
+          return In_;
+        }
+        if (n.value === "is") {
+          return Is;
+        }
+    }
+  } else if (NCH(n) === 2) {
+    if (CHILD(n, 0).type === TOK.T_NAME) {
+      if (CHILD(n, 1).value === "in") {
+        return NotIn;
+      }
+      if (CHILD(n, 0).value === "is") {
+        return IsNot;
+      }
+    }
+  }
+  goog.asserts.fail("invalid comp_op");
+}
+function seqForTestlist(c, n) {
+  /* testlist: test (',' test)* [','] */
+  var i;
+  var seq = [];
+  goog.asserts.assert(n.type === SYM.testlist || n.type === SYM.listmaker || n.type === SYM.testlist_comp || n.type === SYM.testlist_safe || n.type === SYM.testlist1);
+  for (i = 0; i < NCH(n); i += 2) {
+    goog.asserts.assert(CHILD(n, i).type === SYM.test || CHILD(n, i).type === SYM.old_test);
+    seq[i / 2] = astForExpr(c, CHILD(n, i));
+  }
+  return seq;
+}
+function astForSuite(c, n) {
+  /* suite: simple_stmt | NEWLINE INDENT stmt+ DEDENT */
+  var j;
+  var num;
+  var i;
+  var end;
+  var ch;
+  var pos;
+  var seq;
+  REQ(n, SYM.suite);
+  seq = [];
+  pos = 0;
+  if (CHILD(n, 0).type === SYM.simple_stmt) {
+    n = CHILD(n, 0);
+    /* simple_stmt always ends with an NEWLINE and may have a trailing
+     * SEMI. */
+    end = NCH(n) - 1;
+    if (CHILD(n, end - 1).type === TOK.T_SEMI) {
+      end -= 1;
+    }
+    for (i = 0; i < end; i += 2)
+    // by 2 to skip ;
+    {
+      seq[pos++] = astForStmt(c, CHILD(n, i));
+    }
+  } else {
+    for (i = 2; i < NCH(n) - 1; ++i) {
+      ch = CHILD(n, i);
+      REQ(ch, SYM.stmt);
+      num = numStmts(ch);
+      if (num === 1) {
+        // small_stmt or compound_stmt w/ only 1 child
+        seq[pos++] = astForStmt(c, ch);
+      } else {
+        ch = CHILD(ch, 0);
+        REQ(ch, SYM.simple_stmt);
+        for (j = 0; j < NCH(ch); j += 2) {
+          if (NCH(CHILD(ch, j)) === 0) {
+            goog.asserts.assert(j + 1 === NCH(ch));
+            break;
+          }
+          seq[pos++] = astForStmt(c, CHILD(ch, j));
+        }
+      }
+    }
+  }
+  goog.asserts.assert(pos === numStmts(n));
+  return seq;
+}
+function astForExceptClause(c, exc, body) {
+  /* except_clause: 'except' [test [(',' | 'as') test]] */
+  var e;
+  REQ(exc, SYM.except_clause);
+  REQ(body, SYM.suite);
+  if (NCH(exc) === 1) {
+    return new ExceptHandler(null, null, astForSuite(c, body), exc.lineno, exc.col_offset);
+  } else if (NCH(exc) === 2) {
+    return new ExceptHandler(astForExpr(c, CHILD(exc, 1)), null, astForSuite(c, body), exc.lineno, exc.col_offset);
+  } else if (NCH(exc) === 4) {
+    e = astForExpr(c, CHILD(exc, 3));
+    setContext(c, e, Store, CHILD(exc, 3));
+    return new ExceptHandler(astForExpr(c, CHILD(exc, 1)), e, astForSuite(c, body), exc.lineno, exc.col_offset);
+  }
+  goog.asserts.fail("wrong number of children for except clause");
+}
+function astForTryStmt(c, n) {
+  var exceptSt;
+  var i;
+  var handlers;
+  var nc = NCH(n);
+  var nexcept = (nc - 3) / 3;
+  var body,
+    orelse = [],
+    finally_ = null;
+  REQ(n, SYM.try_stmt);
+  body = astForSuite(c, CHILD(n, 2));
+  if (CHILD(n, nc - 3).type === TOK.T_NAME) {
+    if (CHILD(n, nc - 3).value === "finally") {
+      if (nc >= 9 && CHILD(n, nc - 6).type === TOK.T_NAME) {
+        /* we can assume it's an "else",
+         because nc >= 9 for try-else-finally and
+         it would otherwise have a type of except_clause */
+        orelse = astForSuite(c, CHILD(n, nc - 4));
+        nexcept--;
+      }
+      finally_ = astForSuite(c, CHILD(n, nc - 1));
+      nexcept--;
+    } else {
+      /* we can assume it's an "else",
+       otherwise it would have a type of except_clause */
+      orelse = astForSuite(c, CHILD(n, nc - 1));
+      nexcept--;
+    }
+  } else if (CHILD(n, nc - 3).type !== SYM.except_clause) {
+    throw new Sk.builtin.SyntaxError("malformed 'try' statement", c.c_filename, n.lineno);
+  }
+  if (nexcept > 0) {
+    handlers = [];
+    for (i = 0; i < nexcept; ++i) {
+      handlers[i] = astForExceptClause(c, CHILD(n, 3 + i * 3), CHILD(n, 5 + i * 3));
+    }
+    exceptSt = new TryExcept(body, handlers, orelse, n.lineno, n.col_offset);
+    if (!finally_) {
+      return exceptSt;
+    }
+
+    /* if a 'finally' is present too, we nest the TryExcept within a
+     TryFinally to emulate try ... except ... finally */
+    body = [exceptSt];
+  }
+  goog.asserts.assert(finally_ !== null);
+  return new TryFinally(body, finally_, n.lineno, n.col_offset);
+}
+function astForDottedName(c, n) {
+  var i;
+  var e;
+  var id;
+  var col_offset;
+  var lineno;
+  REQ(n, SYM.dotted_name);
+  lineno = n.lineno;
+  col_offset = n.col_offset;
+  id = strobj(CHILD(n, 0).value);
+  e = new Name(id, Load, lineno, col_offset);
+  for (i = 2; i < NCH(n); i += 2) {
+    id = strobj(CHILD(n, i).value);
+    e = new Attribute(e, id, Load, lineno, col_offset);
+  }
+  return e;
+}
+function astForDecorator(c, n) {
+  /* decorator: '@' dotted_name [ '(' [arglist] ')' ] NEWLINE */
+  var nameExpr;
+  REQ(n, SYM.decorator);
+  REQ(CHILD(n, 0), TOK.T_AT);
+  REQ(CHILD(n, NCH(n) - 1), TOK.T_NEWLINE);
+  nameExpr = astForDottedName(c, CHILD(n, 1));
+  if (NCH(n) === 3)
+    // no args
+    {
+      return nameExpr;
+    } else if (NCH(n) === 5)
+    // call with no args
+    {
+      return new Call(nameExpr, [], [], null, null, n.lineno, n.col_offset);
+    } else {
+    return astForCall(c, CHILD(n, 3), nameExpr);
+  }
+}
+function astForDecorators(c, n) {
+  var i;
+  var decoratorSeq;
+  REQ(n, SYM.decorators);
+  decoratorSeq = [];
+  for (i = 0; i < NCH(n); ++i) {
+    decoratorSeq[i] = astForDecorator(c, CHILD(n, i));
+  }
+  return decoratorSeq;
+}
+function astForDecorated(c, n) {
+  var thing;
+  var decoratorSeq;
+  REQ(n, SYM.decorated);
+  decoratorSeq = astForDecorators(c, CHILD(n, 0));
+  goog.asserts.assert(CHILD(n, 1).type === SYM.funcdef || CHILD(n, 1).type === SYM.classdef);
+  thing = null;
+  if (CHILD(n, 1).type === SYM.funcdef) {
+    thing = astForFuncdef(c, CHILD(n, 1), decoratorSeq);
+  } else if (CHILD(n, 1) === SYM.classdef) {
+    thing = astForClassdef(c, CHILD(n, 1), decoratorSeq);
+  }
+  if (thing) {
+    thing.lineno = n.lineno;
+    thing.col_offset = n.col_offset;
+  }
+  return thing;
+}
+
+//note: with statements need to be updated to 2.7
+//see: ast.c lines: 3127 -> 3185
+
+function astForWithVar(c, n) {
+  REQ(n, SYM.with_item);
+  return astForExpr(c, CHILD(n, 1));
+}
+function astForWithStmt(c, n) {
+  /* with_stmt: 'with' test [ with_var ] ':' suite */
+  var optionalVars;
+  var contextExpr;
+  var suiteIndex = 3; // skip with, test, :
+  goog.asserts.assert(n.type === SYM.with_stmt);
+  contextExpr = astForExpr(c, CHILD(n, 1));
+  if (CHILD(n, 2).type === SYM.with_item) {
+    optionalVars = astForWithVar(c, CHILD(n, 2));
+    setContext(c, optionalVars, Store, n);
+    suiteIndex = 4;
+  }
+  return new With_(contextExpr, optionalVars, astForSuite(c, CHILD(n, suiteIndex)), n.lineno, n.col_offset);
+}
+function astForExecStmt(c, n) {
+  var expr1,
+    globals = null,
+    locals = null;
+  var nchildren = NCH(n);
+  goog.asserts.assert(nchildren === 2 || nchildren === 4 || nchildren === 6);
+
+  /* exec_stmt: 'exec' expr ['in' test [',' test]] */
+  REQ(n, SYM.exec_stmt);
+  expr1 = astForExpr(c, CHILD(n, 1));
+  if (nchildren >= 4) {
+    globals = astForExpr(c, CHILD(n, 3));
+  }
+  if (nchildren === 6) {
+    locals = astForExpr(c, CHILD(n, 5));
+  }
+  return new Exec(expr1, globals, locals, n.lineno, n.col_offset);
+}
+function astForIfStmt(c, n) {
+  /* if_stmt: 'if' test ':' suite ('elif' test ':' suite)*
+   ['else' ':' suite]
+   */
+  var off;
+  var i;
+  var orelse;
+  var hasElse;
+  var nElif;
+  var decider;
+  var s;
+  REQ(n, SYM.if_stmt);
+  if (NCH(n) === 4) {
+    return new If_(astForExpr(c, CHILD(n, 1)), astForSuite(c, CHILD(n, 3)), [], n.lineno, n.col_offset);
+  }
+  s = CHILD(n, 4).value;
+  decider = s.charAt(2); // elSe or elIf
+  if (decider === "s") {
+    return new If_(astForExpr(c, CHILD(n, 1)), astForSuite(c, CHILD(n, 3)), astForSuite(c, CHILD(n, 6)), n.lineno, n.col_offset);
+  } else if (decider === "i") {
+    nElif = NCH(n) - 4;
+    hasElse = false;
+    orelse = [];
+
+    /* must reference the child nElif+1 since 'else' token is third, not
+     * fourth child from the end. */
+    if (CHILD(n, nElif + 1).type === TOK.T_NAME && CHILD(n, nElif + 1).value.charAt(2) === "s") {
+      hasElse = true;
+      nElif -= 3;
+    }
+    nElif /= 4;
+    if (hasElse) {
+      orelse = [new If_(astForExpr(c, CHILD(n, NCH(n) - 6)), astForSuite(c, CHILD(n, NCH(n) - 4)), astForSuite(c, CHILD(n, NCH(n) - 1)), CHILD(n, NCH(n) - 6).lineno, CHILD(n, NCH(n) - 6).col_offset)];
+      nElif--;
+    }
+    for (i = 0; i < nElif; ++i) {
+      off = 5 + (nElif - i - 1) * 4;
+      orelse = [new If_(astForExpr(c, CHILD(n, off)), astForSuite(c, CHILD(n, off + 2)), orelse, CHILD(n, off).lineno, CHILD(n, off).col_offset)];
+    }
+    return new If_(astForExpr(c, CHILD(n, 1)), astForSuite(c, CHILD(n, 3)), orelse, n.lineno, n.col_offset);
+  }
+  goog.asserts.fail("unexpected token in 'if' statement");
+}
+function astForExprlist(c, n, context) {
+  var e;
+  var i;
+  var seq;
+  REQ(n, SYM.exprlist);
+  seq = [];
+  for (i = 0; i < NCH(n); i += 2) {
+    e = astForExpr(c, CHILD(n, i));
+    seq[i / 2] = e;
+    if (context) {
+      setContext(c, e, context, CHILD(n, i));
+    }
+  }
+  return seq;
+}
+function astForDelStmt(c, n) {
+  /* del_stmt: 'del' exprlist */
+  REQ(n, SYM.del_stmt);
+  return new Delete_(astForExprlist(c, CHILD(n, 1), Del), n.lineno, n.col_offset);
+}
+function astForGlobalStmt(c, n) {
+  /* global_stmt: 'global' NAME (',' NAME)* */
+  var i;
+  var s = [];
+  REQ(n, SYM.global_stmt);
+  for (i = 1; i < NCH(n); i += 2) {
+    s[(i - 1) / 2] = strobj(CHILD(n, i).value);
+  }
+  return new Global(s, n.lineno, n.col_offset);
+}
+function astForAssertStmt(c, n) {
+  /* assert_stmt: 'assert' test [',' test] */
+  REQ(n, SYM.assert_stmt);
+  if (NCH(n) === 2) {
+    return new Assert(astForExpr(c, CHILD(n, 1)), null, n.lineno, n.col_offset);
+  } else if (NCH(n) === 4) {
+    return new Assert(astForExpr(c, CHILD(n, 1)), astForExpr(c, CHILD(n, 3)), n.lineno, n.col_offset);
+  }
+  goog.asserts.fail("improper number of parts to assert stmt");
+}
+function aliasForImportName(c, n) {
+  /*
+   import_as_name: NAME ['as' NAME]
+   dotted_as_name: dotted_name ['as' NAME]
+   dotted_name: NAME ('.' NAME)*
+   */
+
+  var i;
+  var a;
+  var name;
+  var str;
+  loop: while (true) {
+    switch (n.type) {
+      case SYM.import_as_name:
+        str = null;
+        name = strobj(CHILD(n, 0).value);
+        if (NCH(n) === 3) {
+          str = CHILD(n, 2).value;
+        }
+        return new alias(name, str == null ? null : strobj(str));
+      case SYM.dotted_as_name:
+        if (NCH(n) === 1) {
+          n = CHILD(n, 0);
+          continue loop;
+        } else {
+          a = aliasForImportName(c, CHILD(n, 0));
+          goog.asserts.assert(!a.asname);
+          a.asname = strobj(CHILD(n, 2).value);
+          return a;
+        }
+        break;
+      case SYM.dotted_name:
+        if (NCH(n) === 1) {
+          return new alias(strobj(CHILD(n, 0).value), null);
+        } else {
+          // create a string of the form a.b.c
+          str = "";
+          for (i = 0; i < NCH(n); i += 2) {
+            str += CHILD(n, i).value + ".";
+          }
+          return new alias(strobj(str.substr(0, str.length - 1)), null);
+        }
+        break;
+      case TOK.T_STAR:
+        return new alias(strobj("*"), null);
+      default:
+        throw new Sk.builtin.SyntaxError("unexpected import name", c.c_filename, n.lineno);
+    }
+    break;
+  }
+}
+function astForImportStmt(c, n) {
+  /*
+   import_stmt: import_name | import_from
+   import_name: 'import' dotted_as_names
+   import_from: 'from' ('.'* dotted_name | '.') 'import'
+   ('*' | '(' import_as_names ')' | import_as_names)
+   */
+  var modname;
+  var idx;
+  var nchildren;
+  var ndots;
+  var mod;
+  var i;
+  var aliases;
+  var col_offset;
+  var lineno;
+  REQ(n, SYM.import_stmt);
+  lineno = n.lineno;
+  col_offset = n.col_offset;
+  n = CHILD(n, 0);
+  if (n.type === SYM.import_name) {
+    n = CHILD(n, 1);
+    REQ(n, SYM.dotted_as_names);
+    aliases = [];
+    for (i = 0; i < NCH(n); i += 2) {
+      aliases[i / 2] = aliasForImportName(c, CHILD(n, i));
+    }
+    return new Import_(aliases, lineno, col_offset);
+  } else if (n.type === SYM.import_from) {
+    mod = null;
+    ndots = 0;
+    for (idx = 1; idx < NCH(n); ++idx) {
+      if (CHILD(n, idx).type === SYM.dotted_name) {
+        mod = aliasForImportName(c, CHILD(n, idx));
+        idx++;
+        break;
+      } else if (CHILD(n, idx).type !== TOK.T_DOT) {
+        break;
+      }
+      ndots++;
+    }
+    ++idx; // skip the import keyword
+    switch (CHILD(n, idx).type) {
+      case TOK.T_STAR:
+        // from ... import
+        n = CHILD(n, idx);
+        nchildren = 1;
+        break;
+      case TOK.T_LPAR:
+        // from ... import (x, y, z)
+        n = CHILD(n, idx + 1);
+        nchildren = NCH(n);
+        break;
+      case SYM.import_as_names:
+        // from ... import x, y, z
+        n = CHILD(n, idx);
+        nchildren = NCH(n);
+        if (nchildren % 2 === 0) {
+          throw new Sk.builtin.SyntaxError("trailing comma not allowed without surrounding parentheses", c.c_filename, n.lineno);
+        }
+        break;
+      default:
+        throw new Sk.builtin.SyntaxError("Unexpected node-type in from-import", c.c_filename, n.lineno);
+    }
+    aliases = [];
+    if (n.type === TOK.T_STAR) {
+      aliases[0] = aliasForImportName(c, n);
+    } else {
+      for (i = 0; i < NCH(n); i += 2) {
+        aliases[i / 2] = aliasForImportName(c, CHILD(n, i));
+      }
+    }
+    modname = mod ? mod.name.v : "";
+    return new ImportFrom(strobj(modname), aliases, ndots, lineno, col_offset);
+  }
+  throw new Sk.builtin.SyntaxError("unknown import statement", c.c_filename, n.lineno);
+}
+function astForTestlistComp(c, n) {
+  /* testlist_comp: test ( comp_for | (',' test)* [','] ) */
+  /* argument: test [comp_for] */
+  goog.asserts.assert(n.type === SYM.testlist_comp || n.type === SYM.argument);
+  if (NCH(n) > 1 && CHILD(n, 1).type === SYM.comp_for) {
+    return astForGenExpr(c, n);
+  }
+  return astForTestlist(c, n);
+}
+function astForListcomp(c, n) {
+  /* listmaker: test ( list_for | (',' test)* [','] )
+   list_for: 'for' exprlist 'in' testlist_safe [list_iter]
+   list_iter: list_for | list_if
+   list_if: 'if' test [list_iter]
+   testlist_safe: test [(',' test)+ [',']]
+   */
+
+  function countListFors(c, n) {
+    var nfors = 0;
+    var ch = CHILD(n, 1);
+    count_list_for: while (true) {
+      nfors++;
+      REQ(ch, SYM.list_for);
+      if (NCH(ch) === 5) {
+        ch = CHILD(ch, 4);
+      } else {
+        return nfors;
+      }
+      count_list_iter: while (true) {
+        REQ(ch, SYM.list_iter);
+        ch = CHILD(ch, 0);
+        if (ch.type === SYM.list_for) {
+          continue count_list_for;
+        } else if (ch.type === SYM.list_if) {
+          if (NCH(ch) === 3) {
+            ch = CHILD(ch, 2);
+            continue count_list_iter;
+          } else {
+            return nfors;
+          }
+        }
+        break;
+      }
+      break;
+    }
+  }
+  function countListIfs(c, n) {
+    var nifs = 0;
+    while (true) {
+      REQ(n, SYM.list_iter);
+      if (CHILD(n, 0).type === SYM.list_for) {
+        return nifs;
+      }
+      n = CHILD(n, 0);
+      REQ(n, SYM.list_if);
+      nifs++;
+      if (NCH(n) == 2) {
+        return nifs;
+      }
+      n = CHILD(n, 2);
+    }
+  }
+  var j;
+  var ifs;
+  var nifs;
+  var lc;
+  var expression;
+  var t;
+  var forch;
+  var i;
+  var ch;
+  var listcomps;
+  var nfors;
+  var elt;
+  REQ(n, SYM.listmaker);
+  goog.asserts.assert(NCH(n) > 1);
+  elt = astForExpr(c, CHILD(n, 0));
+  nfors = countListFors(c, n);
+  listcomps = [];
+  ch = CHILD(n, 1);
+  for (i = 0; i < nfors; ++i) {
+    REQ(ch, SYM.list_for);
+    forch = CHILD(ch, 1);
+    t = astForExprlist(c, forch, Store);
+    expression = astForTestlist(c, CHILD(ch, 3));
+    if (NCH(forch) === 1) {
+      lc = new comprehension(t[0], expression, []);
+    } else {
+      lc = new comprehension(new Tuple(t, Store, ch.lineno, ch.col_offset), expression, []);
+    }
+    if (NCH(ch) === 5) {
+      ch = CHILD(ch, 4);
+      nifs = countListIfs(c, ch);
+      ifs = [];
+      for (j = 0; j < nifs; ++j) {
+        REQ(ch, SYM.list_iter);
+        ch = CHILD(ch, 0);
+        REQ(ch, SYM.list_if);
+        ifs[j] = astForExpr(c, CHILD(ch, 1));
+        if (NCH(ch) === 3) {
+          ch = CHILD(ch, 2);
+        }
+      }
+      if (ch.type === SYM.list_iter) {
+        ch = CHILD(ch, 0);
+      }
+      lc.ifs = ifs;
+    }
+    listcomps[i] = lc;
+  }
+  return new ListComp(elt, listcomps, n.lineno, n.col_offset);
+}
+function astForFactor(c, n) {
+  /* some random peephole thing that cpy does */
+  var expression;
+  var pnum;
+  var patom;
+  var ppower;
+  var pfactor;
+  if (CHILD(n, 0).type === TOK.T_MINUS && NCH(n) === 2) {
+    pfactor = CHILD(n, 1);
+    if (pfactor.type === SYM.factor && NCH(pfactor) === 1) {
+      ppower = CHILD(pfactor, 0);
+      if (ppower.type === SYM.power && NCH(ppower) === 1) {
+        patom = CHILD(ppower, 0);
+        if (patom.type === SYM.atom) {
+          pnum = CHILD(patom, 0);
+          if (pnum.type === TOK.T_NUMBER) {
+            pnum.value = "-" + pnum.value;
+            return astForAtom(c, patom);
+          }
+        }
+      }
+    }
+  }
+  expression = astForExpr(c, CHILD(n, 1));
+  switch (CHILD(n, 0).type) {
+    case TOK.T_PLUS:
+      return new UnaryOp(UAdd, expression, n.lineno, n.col_offset);
+    case TOK.T_MINUS:
+      return new UnaryOp(USub, expression, n.lineno, n.col_offset);
+    case TOK.T_TILDE:
+      return new UnaryOp(Invert, expression, n.lineno, n.col_offset);
+  }
+  goog.asserts.fail("unhandled factor");
+}
+function astForForStmt(c, n) {
+  /* for_stmt: 'for' exprlist 'in' testlist ':' suite ['else' ':' suite] */
+  var target;
+  var _target;
+  var nodeTarget;
+  var seq = [];
+  REQ(n, SYM.for_stmt);
+  if (NCH(n) === 9) {
+    seq = astForSuite(c, CHILD(n, 8));
+  }
+  nodeTarget = CHILD(n, 1);
+  _target = astForExprlist(c, nodeTarget, Store);
+  if (NCH(nodeTarget) === 1) {
+    target = _target[0];
+  } else {
+    target = new Tuple(_target, Store, n.lineno, n.col_offset);
+  }
+  return new For_(target, astForTestlist(c, CHILD(n, 3)), astForSuite(c, CHILD(n, 5)), seq, n.lineno, n.col_offset);
+}
+function astForCall(c, n, func) {
+  /*
+    arglist: (argument ',')* (argument [',']| '*' test [',' '**' test]
+             | '**' test)
+    argument: test [comp_for] | test '=' test       # Really [keyword '='] test
+  */
+  var tmp;
+  var k;
+  var key;
+  var e;
+  var kwarg;
+  var vararg;
+  var keywords;
+  var args;
+  var ch;
+  var i;
+  var ngens;
+  var nkeywords;
+  var nargs;
+  REQ(n, SYM.arglist);
+  nargs = 0;
+  nkeywords = 0;
+  ngens = 0;
+  for (i = 0; i < NCH(n); i++) {
+    ch = CHILD(n, i);
+    if (ch.type === SYM.argument) {
+      if (NCH(ch) === 1) {
+        nargs++;
+      } else if (CHILD(ch, 1).type === SYM.comp_for) {
+        ngens++;
+      } else {
+        nkeywords++;
+      }
+    }
+  }
+  if (ngens > 1 || ngens && (nargs || nkeywords)) {
+    throw new Sk.builtin.SyntaxError("Generator expression must be parenthesized if not sole argument", c.c_filename, n.lineno);
+  }
+  if (nargs + nkeywords + ngens > 255) {
+    throw new Sk.builtin.SyntaxError("more than 255 arguments", c.c_filename, n.lineno);
+  }
+  args = [];
+  keywords = [];
+  nargs = 0;
+  nkeywords = 0;
+  vararg = null;
+  kwarg = null;
+  for (i = 0; i < NCH(n); i++) {
+    ch = CHILD(n, i);
+    if (ch.type === SYM.argument) {
+      if (NCH(ch) === 1) {
+        if (nkeywords) {
+          throw new Sk.builtin.SyntaxError("non-keyword arg after keyword arg", c.c_filename, n.lineno);
+        }
+        if (vararg) {
+          throw new Sk.builtin.SyntaxError("only named arguments may follow *expression", c.c_filename, n.lineno);
+        }
+        args[nargs++] = astForExpr(c, CHILD(ch, 0));
+      } else if (CHILD(ch, 1).type === SYM.comp_for) {
+        args[nargs++] = astForGenExpr(c, ch);
+      } else {
+        e = astForExpr(c, CHILD(ch, 0));
+        if (e.constructor === Lambda) {
+          throw new Sk.builtin.SyntaxError("lambda cannot contain assignment", c.c_filename, n.lineno);
+        } else if (e.constructor !== Name) {
+          throw new Sk.builtin.SyntaxError("keyword can't be an expression", c.c_filename, n.lineno);
+        }
+        key = e.id;
+        forbiddenCheck(c, CHILD(ch, 0), key, n.lineno);
+        for (k = 0; k < nkeywords; ++k) {
+          tmp = keywords[k].arg;
+          if (tmp === key) {
+            throw new Sk.builtin.SyntaxError("keyword argument repeated", c.c_filename, n.lineno);
+          }
+        }
+        keywords[nkeywords++] = new keyword(key, astForExpr(c, CHILD(ch, 2)));
+      }
+    } else if (ch.type === TOK.T_STAR) {
+      vararg = astForExpr(c, CHILD(n, ++i));
+    } else if (ch.type === TOK.T_DOUBLESTAR) {
+      kwarg = astForExpr(c, CHILD(n, ++i));
+    }
+  }
+  return new Call(func, args, keywords, vararg, kwarg, func.lineno, func.col_offset);
+}
+function astForTrailer(c, n, leftExpr) {
+  /* trailer: '(' [arglist] ')' | '[' subscriptlist ']' | '.' NAME
+   subscriptlist: subscript (',' subscript)* [',']
+   subscript: '.' '.' '.' | test | [test] ':' [test] [sliceop]
+   */
+  var e;
+  var elts;
+  var slc;
+  var j;
+  var slices;
+  var simple;
+  REQ(n, SYM.trailer);
+  if (CHILD(n, 0).type === TOK.T_LPAR) {
+    if (NCH(n) === 2) {
+      return new Call(leftExpr, [], [], null, null, n.lineno, n.col_offset);
+    } else {
+      return astForCall(c, CHILD(n, 1), leftExpr);
+    }
+  } else if (CHILD(n, 0).type === TOK.T_DOT) {
+    return new Attribute(leftExpr, strobj(CHILD(n, 1).value), Load, n.lineno, n.col_offset);
+  } else {
+    REQ(CHILD(n, 0), TOK.T_LSQB);
+    REQ(CHILD(n, 2), TOK.T_RSQB);
+    n = CHILD(n, 1);
+    if (NCH(n) === 1) {
+      return new Subscript(leftExpr, astForSlice(c, CHILD(n, 0)), Load, n.lineno, n.col_offset);
+    } else {
+      /* The grammar is ambiguous here. The ambiguity is resolved
+       by treating the sequence as a tuple literal if there are
+       no slice features.
+       */
+      simple = true;
+      slices = [];
+      for (j = 0; j < NCH(n); j += 2) {
+        slc = astForSlice(c, CHILD(n, j));
+        if (slc.constructor !== Index) {
+          simple = false;
+        }
+        slices[j / 2] = slc;
+      }
+      if (!simple) {
+        return new Subscript(leftExpr, new ExtSlice(slices), Load, n.lineno, n.col_offset);
+      }
+      elts = [];
+      for (j = 0; j < slices.length; ++j) {
+        slc = slices[j];
+        goog.asserts.assert(slc.constructor === Index && slc.value !== null && slc.value !== undefined);
+        elts[j] = slc.value;
+      }
+      e = new Tuple(elts, Load, n.lineno, n.col_offset);
+      return new Subscript(leftExpr, new Index(e), Load, n.lineno, n.col_offset);
+    }
+  }
+}
+function astForFlowStmt(c, n) {
+  /*
+   flow_stmt: break_stmt | continue_stmt | return_stmt | raise_stmt
+   | yield_stmt
+   break_stmt: 'break'
+   continue_stmt: 'continue'
+   return_stmt: 'return' [testlist]
+   yield_stmt: yield_expr
+   yield_expr: 'yield' testlist
+   raise_stmt: 'raise' [test [',' test [',' test]]]
+   */
+  var ch;
+  REQ(n, SYM.flow_stmt);
+  ch = CHILD(n, 0);
+  switch (ch.type) {
+    case SYM.break_stmt:
+      return new Break_(n.lineno, n.col_offset);
+    case SYM.continue_stmt:
+      return new Continue_(n.lineno, n.col_offset);
+    case SYM.yield_stmt:
+      return new Expr(astForExpr(c, CHILD(ch, 0)), n.lineno, n.col_offset);
+    case SYM.return_stmt:
+      if (NCH(ch) === 1) {
+        return new Return_(null, n.lineno, n.col_offset);
+      } else {
+        return new Return_(astForTestlist(c, CHILD(ch, 1)), n.lineno, n.col_offset);
+      }
+      break;
+    case SYM.raise_stmt:
+      if (NCH(ch) === 1) {
+        return new Raise(null, null, null, n.lineno, n.col_offset);
+      } else if (NCH(ch) === 2) {
+        return new Raise(astForExpr(c, CHILD(ch, 1)), null, null, n.lineno, n.col_offset);
+      } else if (NCH(ch) === 4) {
+        return new Raise(astForExpr(c, CHILD(ch, 1)), astForExpr(c, CHILD(ch, 3)), null, n.lineno, n.col_offset);
+      } else if (NCH(ch) === 6) {
+        return new Raise(astForExpr(c, CHILD(ch, 1)), astForExpr(c, CHILD(ch, 3)), astForExpr(c, CHILD(ch, 5)), n.lineno, n.col_offset);
+      }
+      break;
+    default:
+      goog.asserts.fail("unexpected flow_stmt");
+  }
+  goog.asserts.fail("unhandled flow statement");
+}
+function astForArguments(c, n) {
+  /* parameters: '(' [varargslist] ')'
+   varargslist: (fpdef ['=' test] ',')* ('*' NAME [',' '**' NAME]
+   | '**' NAME) | fpdef ['=' test] (',' fpdef ['=' test])* [',']
+   */
+  var parenthesized;
+  var id;
+  var complexArgs;
+  var k;
+  var j;
+  var i;
+  var foundDefault;
+  var defaults;
+  var args;
+  var ch;
+  var vararg = null;
+  var kwarg = null;
+  if (n.type === SYM.parameters) {
+    if (NCH(n) === 2)
+      // () as arglist
+      {
+        return new arguments_([], null, null, []);
+      }
+    n = CHILD(n, 1);
+  }
+  REQ(n, SYM.varargslist);
+  args = [];
+  defaults = [];
+
+  /* fpdef: NAME | '(' fplist ')'
+   fplist: fpdef (',' fpdef)* [',']
+   */
+  foundDefault = false;
+  i = 0;
+  j = 0; // index for defaults
+  k = 0; // index for args
+  while (i < NCH(n)) {
+    ch = CHILD(n, i);
+    switch (ch.type) {
+      case SYM.fpdef:
+        complexArgs = 0;
+        parenthesized = 0;
+        handle_fpdef: while (true) {
+          if (i + 1 < NCH(n) && CHILD(n, i + 1).type === TOK.T_EQUAL) {
+            defaults[j++] = astForExpr(c, CHILD(n, i + 2));
+            i += 2;
+            foundDefault = true;
+          } else if (foundDefault) {
+            /* def f((x)=4): pass should raise an error.
+             def f((x, (y))): pass will just incur the tuple unpacking warning. */
+            if (parenthesized && !complexArgs) {
+              throw new Sk.builtin.SyntaxError("parenthesized arg with default", c.c_filename, n.lineno);
+            }
+            throw new Sk.builtin.SyntaxError("non-default argument follows default argument", c.c_filename, n.lineno);
+          }
+          if (NCH(ch) === 3) {
+            ch = CHILD(ch, 1);
+            // def foo((x)): is not complex, special case.
+            if (NCH(ch) !== 1) {
+              throw new Sk.builtin.SyntaxError("tuple parameter unpacking has been removed", c.c_filename, n.lineno);
+            } else {
+              /* def foo((x)): setup for checking NAME below. */
+              /* Loop because there can be many parens and tuple
+               unpacking mixed in. */
+              parenthesized = true;
+              ch = CHILD(ch, 0);
+              goog.asserts.assert(ch.type === SYM.fpdef);
+              continue handle_fpdef;
+            }
+          }
+          if (CHILD(ch, 0).type === TOK.T_NAME) {
+            forbiddenCheck(c, n, CHILD(ch, 0).value, n.lineno);
+            id = strobj(CHILD(ch, 0).value);
+            args[k++] = new Name(id, Param, ch.lineno, ch.col_offset);
+          }
+          i += 2;
+          if (parenthesized) {
+            throw new Sk.builtin.SyntaxError("parenthesized argument names are invalid", c.c_filename, n.lineno);
+          }
+          break;
+        }
+        break;
+      case TOK.T_STAR:
+        forbiddenCheck(c, CHILD(n, i + 1), CHILD(n, i + 1).value, n.lineno);
+        vararg = strobj(CHILD(n, i + 1).value);
+        i += 3;
+        break;
+      case TOK.T_DOUBLESTAR:
+        forbiddenCheck(c, CHILD(n, i + 1), CHILD(n, i + 1).value, n.lineno);
+        kwarg = strobj(CHILD(n, i + 1).value);
+        i += 3;
+        break;
+      default:
+        goog.asserts.fail("unexpected node in varargslist");
+    }
+  }
+  return new arguments_(args, vararg, kwarg, defaults);
+}
+function astForFuncdef(c, n, decoratorSeq) {
+  /* funcdef: 'def' NAME parameters ':' suite */
+  var body;
+  var args;
+  var name;
+  REQ(n, SYM.funcdef);
+  name = strobj(CHILD(n, 1).value);
+  forbiddenCheck(c, CHILD(n, 1), CHILD(n, 1).value, n.lineno);
+  args = astForArguments(c, CHILD(n, 2));
+  body = astForSuite(c, CHILD(n, 4));
+  return new FunctionDef(name, args, body, decoratorSeq, n.lineno, n.col_offset);
+}
+function astForClassBases(c, n) {
+  /* testlist: test (',' test)* [','] */
+  goog.asserts.assert(NCH(n) > 0);
+  REQ(n, SYM.testlist);
+  if (NCH(n) === 1) {
+    return [astForExpr(c, CHILD(n, 0))];
+  }
+  return seqForTestlist(c, n);
+}
+function astForClassdef(c, n, decoratorSeq) {
+  /* classdef: 'class' NAME ['(' testlist ')'] ':' suite */
+  var s;
+  var bases;
+  var classname;
+  REQ(n, SYM.classdef);
+  forbiddenCheck(c, n, CHILD(n, 1).value, n.lineno);
+  classname = strobj(CHILD(n, 1).value);
+  if (NCH(n) === 4) {
+    return new ClassDef(classname, [], astForSuite(c, CHILD(n, 3)), decoratorSeq, n.lineno, n.col_offset);
+  }
+  if (CHILD(n, 3).type === TOK.T_RPAR) {
+    return new ClassDef(classname, [], astForSuite(c, CHILD(n, 5)), decoratorSeq, n.lineno, n.col_offset);
+  }
+  bases = astForClassBases(c, CHILD(n, 3));
+  s = astForSuite(c, CHILD(n, 6));
+  return new ClassDef(classname, bases, s, decoratorSeq, n.lineno, n.col_offset);
+}
+function astForLambdef(c, n) {
+  /* lambdef: 'lambda' [varargslist] ':' test */
+  var args;
+  var expression;
+  if (NCH(n) === 3) {
+    args = new arguments_([], null, null, []);
+    expression = astForExpr(c, CHILD(n, 2));
+  } else {
+    args = astForArguments(c, CHILD(n, 1));
+    expression = astForExpr(c, CHILD(n, 3));
+  }
+  return new Lambda(args, expression, n.lineno, n.col_offset);
+}
+function astForComprehension(c, n) {
+  /* testlist_comp: test ( comp_for | (',' test)* [','] )
+     argument: test [comp_for] | test '=' test       # Really [keyword '='] test */
+
+  var j;
+  var ifs;
+  var nifs;
+  var ge;
+  var expression;
+  var t;
+  var forch;
+  var i;
+  var ch;
+  var genexps;
+  var nfors;
+  var elt;
+  var comps;
+  var comp;
+  function countCompFors(c, n) {
+    var nfors = 0;
+    count_comp_for: while (true) {
+      nfors++;
+      REQ(n, SYM.comp_for);
+      if (NCH(n) === 5) {
+        n = CHILD(n, 4);
+      } else {
+        return nfors;
+      }
+      count_comp_iter: while (true) {
+        REQ(n, SYM.comp_iter);
+        n = CHILD(n, 0);
+        if (n.type === SYM.comp_for) {
+          continue count_comp_for;
+        } else if (n.type === SYM.comp_if) {
+          if (NCH(n) === 3) {
+            n = CHILD(n, 2);
+            continue count_comp_iter;
+          } else {
+            return nfors;
+          }
+        }
+        break;
+      }
+      break;
+    }
+    goog.asserts.fail("logic error in countCompFors");
+  }
+  function countCompIfs(c, n) {
+    var nifs = 0;
+    while (true) {
+      REQ(n, SYM.comp_iter);
+      if (CHILD(n, 0).type === SYM.comp_for) {
+        return nifs;
+      }
+      n = CHILD(n, 0);
+      REQ(n, SYM.comp_if);
+      nifs++;
+      if (NCH(n) == 2) {
+        return nifs;
+      }
+      n = CHILD(n, 2);
+    }
+  }
+  nfors = countCompFors(c, n);
+  comps = [];
+  for (i = 0; i < nfors; ++i) {
+    REQ(n, SYM.comp_for);
+    forch = CHILD(n, 1);
+    t = astForExprlist(c, forch, Store);
+    expression = astForExpr(c, CHILD(n, 3));
+    if (NCH(forch) === 1) {
+      comp = new comprehension(t[0], expression, []);
+    } else {
+      comp = new comprehension(new Tuple(t, Store, n.lineno, n.col_offset), expression, []);
+    }
+    if (NCH(n) === 5) {
+      n = CHILD(n, 4);
+      nifs = countCompIfs(c, n);
+      ifs = [];
+      for (j = 0; j < nifs; ++j) {
+        REQ(n, SYM.comp_iter);
+        n = CHILD(n, 0);
+        REQ(n, SYM.comp_if);
+        expression = astForExpr(c, CHILD(n, 1));
+        ifs[j] = expression;
+        if (NCH(n) === 3) {
+          n = CHILD(n, 2);
+        }
+      }
+      if (n.type === SYM.comp_iter) {
+        n = CHILD(n, 0);
+      }
+      comp.ifs = ifs;
+    }
+    comps[i] = comp;
+  }
+  return comps;
+}
+function astForIterComp(c, n, type) {
+  var elt, comps;
+  goog.asserts.assert(NCH(n) > 1);
+  elt = astForExpr(c, CHILD(n, 0));
+  comps = astForComprehension(c, CHILD(n, 1));
+  if (type === COMP_GENEXP) {
+    return new GeneratorExp(elt, comps, n.lineno, n.col_offset);
+  } else if (type === COMP_SETCOMP) {
+    return new SetComp(elt, comps, n.lineno, n.col_offset);
+  }
+}
+function astForDictComp(c, n) {
+  var key, value;
+  var comps = [];
+  goog.asserts.assert(NCH(n) > 3);
+  REQ(CHILD(n, 1), TOK.T_COLON);
+  key = astForExpr(c, CHILD(n, 0));
+  value = astForExpr(c, CHILD(n, 2));
+  comps = astForComprehension(c, CHILD(n, 3));
+  return new DictComp(key, value, comps, n.lineno, n.col_offset);
+}
+function astForGenExpr(c, n) {
+  goog.asserts.assert(n.type === SYM.testlist_comp || n.type === SYM.argument);
+  return astForIterComp(c, n, COMP_GENEXP);
+}
+function astForSetComp(c, n) {
+  goog.asserts.assert(n.type === SYM.dictorsetmaker);
+  return astForIterComp(c, n, COMP_SETCOMP);
+}
+function astForWhileStmt(c, n) {
+  /* while_stmt: 'while' test ':' suite ['else' ':' suite] */
+  REQ(n, SYM.while_stmt);
+  if (NCH(n) === 4) {
+    return new While_(astForExpr(c, CHILD(n, 1)), astForSuite(c, CHILD(n, 3)), [], n.lineno, n.col_offset);
+  } else if (NCH(n) === 7) {
+    return new While_(astForExpr(c, CHILD(n, 1)), astForSuite(c, CHILD(n, 3)), astForSuite(c, CHILD(n, 6)), n.lineno, n.col_offset);
+  }
+  goog.asserts.fail("wrong number of tokens for 'while' stmt");
+}
+function astForAugassign(c, n) {
+  REQ(n, SYM.augassign);
+  n = CHILD(n, 0);
+  switch (n.value.charAt(0)) {
+    case "+":
+      return Add;
+    case "-":
+      return Sub;
+    case "/":
+      if (n.value.charAt(1) === "/") {
+        return FloorDiv;
+      }
+      return Div;
+    case "%":
+      return Mod;
+    case "<":
+      return LShift;
+    case ">":
+      return RShift;
+    case "&":
+      return BitAnd;
+    case "^":
+      return BitXor;
+    case "|":
+      return BitOr;
+    case "*":
+      if (n.value.charAt(1) === "*") {
+        return Pow;
+      }
+      return Mult;
+    default:
+      goog.asserts.fail("invalid augassign");
+  }
+}
+function astForBinop(c, n) {
+  /* Must account for a sequence of expressions.
+   How should A op B op C by represented?
+   BinOp(BinOp(A, op, B), op, C).
+   */
+  var tmp;
+  var newoperator;
+  var nextOper;
+  var i;
+  var result = new BinOp(astForExpr(c, CHILD(n, 0)), getOperator(CHILD(n, 1)), astForExpr(c, CHILD(n, 2)), n.lineno, n.col_offset);
+  var nops = (NCH(n) - 1) / 2;
+  for (i = 1; i < nops; ++i) {
+    nextOper = CHILD(n, i * 2 + 1);
+    newoperator = getOperator(nextOper);
+    tmp = astForExpr(c, CHILD(n, i * 2 + 2));
+    result = new BinOp(result, newoperator, tmp, nextOper.lineno, nextOper.col_offset);
+  }
+  return result;
+}
+function astForTestlist(c, n) {
+  /* this doesn't show up in Grammar.txt never did: testlist_gexp: test (',' test)* [','] */
+  /* testlist_comp: test (',' test)* [','] */
+  /* testlist: test (',' test)* [','] */
+  /* testlist_safe: test (',' test)+ [','] */
+  /* testlist1: test (',' test)* */
+  goog.asserts.assert(NCH(n) > 0);
+  if (n.type === SYM.testlist_comp) {
+    if (NCH(n) > 1) {
+      goog.asserts.assert(CHILD(n, 1).type !== SYM.comp_for);
+    }
+  } else {
+    goog.asserts.assert(n.type === SYM.testlist || n.type === SYM.testlist_safe || n.type === SYM.testlist1);
+  }
+  if (NCH(n) === 1) {
+    return astForExpr(c, CHILD(n, 0));
+  } else {
+    return new Tuple(seqForTestlist(c, n), Load, n.lineno, n.col_offset);
+  }
+}
+function astForExprStmt(c, n) {
+  var expression;
+  var value;
+  var e;
+  var i;
+  var targets;
+  var expr2;
+  var varName;
+  var expr1;
+  var ch;
+  REQ(n, SYM.expr_stmt);
+  /* expr_stmt: testlist (augassign (yield_expr|testlist)
+   | ('=' (yield_expr|testlist))*)
+   testlist: test (',' test)* [',']
+   augassign: '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^='
+   | '<<=' | '>>=' | '**=' | '//='
+   test: ... here starts the operator precendence dance
+   */
+  if (NCH(n) === 1) {
+    return new Expr(astForTestlist(c, CHILD(n, 0)), n.lineno, n.col_offset);
+  } else if (CHILD(n, 1).type === SYM.augassign) {
+    ch = CHILD(n, 0);
+    expr1 = astForTestlist(c, ch);
+    switch (expr1.constructor) {
+      case GeneratorExp:
+        throw new Sk.builtin.SyntaxError("augmented assignment to generator expression not possible", c.c_filename, n.lineno);
+      case Yield:
+        throw new Sk.builtin.SyntaxError("augmented assignment to yield expression not possible", c.c_filename, n.lineno);
+      case Name:
+        varName = expr1.id;
+        forbiddenCheck(c, ch, varName, n.lineno);
+        break;
+      case Attribute:
+      case Subscript:
+        break;
+      default:
+        throw new Sk.builtin.SyntaxError("illegal expression for augmented assignment", c.c_filename, n.lineno);
+    }
+    setContext(c, expr1, Store, ch);
+    ch = CHILD(n, 2);
+    if (ch.type === SYM.testlist) {
+      expr2 = astForTestlist(c, ch);
+    } else {
+      expr2 = astForExpr(c, ch);
+    }
+    return new AugAssign(expr1, astForAugassign(c, CHILD(n, 1)), expr2, n.lineno, n.col_offset);
+  } else {
+    // normal assignment
+    REQ(CHILD(n, 1), TOK.T_EQUAL);
+    targets = [];
+    for (i = 0; i < NCH(n) - 2; i += 2) {
+      ch = CHILD(n, i);
+      if (ch.type === SYM.yield_expr) {
+        throw new Sk.builtin.SyntaxError("assignment to yield expression not possible", c.c_filename, n.lineno);
+      }
+      e = astForTestlist(c, ch);
+      setContext(c, e, Store, CHILD(n, i));
+      targets[i / 2] = e;
+    }
+    value = CHILD(n, NCH(n) - 1);
+    if (value.type === SYM.testlist) {
+      expression = astForTestlist(c, value);
+    } else {
+      expression = astForExpr(c, value);
+    }
+    return new Assign(targets, expression, n.lineno, n.col_offset);
+  }
+}
+function astForIfexpr(c, n) {
+  /* test: or_test 'if' or_test 'else' test */
+  goog.asserts.assert(NCH(n) === 5);
+  return new IfExp(astForExpr(c, CHILD(n, 2)), astForExpr(c, CHILD(n, 0)), astForExpr(c, CHILD(n, 4)), n.lineno, n.col_offset);
+}
+
+/**
+ * s is a python-style string literal, including quote characters and u/r/b
+ * prefixes. Returns decoded string object.
+ */
+function parsestr(c, s) {
+  var encodeUtf8 = function (s) {
+    return unescape(encodeURIComponent(s));
+  };
+  var decodeUtf8 = function (s) {
+    return decodeURIComponent(escape(s));
+  };
+  var decodeEscape = function (s, quote) {
+    var d3;
+    var d2;
+    var d1;
+    var d0;
+    var c;
+    var i;
+    var len = s.length;
+    var ret = "";
+    for (i = 0; i < len; ++i) {
+      c = s.charAt(i);
+      if (c === "\\") {
+        ++i;
+        c = s.charAt(i);
+        if (c === "n") {
+          ret += "\n";
+        } else if (c === "\\") {
+          ret += "\\";
+        } else if (c === "t") {
+          ret += "\t";
+        } else if (c === "r") {
+          ret += "\r";
+        } else if (c === "b") {
+          ret += "\b";
+        } else if (c === "f") {
+          ret += "\f";
+        } else if (c === "v") {
+          ret += "\v";
+        } else if (c === "0") {
+          ret += "\0";
+        } else if (c === '"') {
+          ret += '"';
+        } else if (c === '\'') {
+          ret += '\'';
+        } else if (c === "\n") /* escaped newline, join lines */{} else if (c === "x") {
+          d0 = s.charAt(++i);
+          d1 = s.charAt(++i);
+          ret += String.fromCharCode(parseInt(d0 + d1, 16));
+        } else if (c === "u" || c === "U") {
+          d0 = s.charAt(++i);
+          d1 = s.charAt(++i);
+          d2 = s.charAt(++i);
+          d3 = s.charAt(++i);
+          ret += String.fromCharCode(parseInt(d0 + d1, 16), parseInt(d2 + d3, 16));
+        } else {
+          // Leave it alone
+          ret += "\\" + c;
+          // goog.asserts.fail("unhandled escape: '" + c.charCodeAt(0) + "'");
+        }
+      } else {
+        ret += c;
+      }
+    }
+    return ret;
+  };
+
+  //print("parsestr", s);
+
+  var quote = s.charAt(0);
+  var rawmode = false;
+  var unicode = false;
+
+  // treats every sequence as unicodes even if they are not treated with uU prefix
+  // kinda hacking though working for most purposes
+  if (c.c_flags & Parser.CO_FUTURE_UNICODE_LITERALS || Sk.python3 === true) {
+    unicode = true;
+  }
+  if (quote === "u" || quote === "U") {
+    s = s.substr(1);
+    quote = s.charAt(0);
+    unicode = true;
+  } else if (quote === "r" || quote === "R") {
+    s = s.substr(1);
+    quote = s.charAt(0);
+    rawmode = true;
+  }
+  goog.asserts.assert(quote !== "b" && quote !== "B", "todo; haven't done b'' strings yet");
+  goog.asserts.assert(quote === "'" || quote === '"' && s.charAt(s.length - 1) === quote);
+  s = s.substr(1, s.length - 2);
+  if (unicode) {
+    s = encodeUtf8(s);
+  }
+  if (s.length >= 4 && s.charAt(0) === quote && s.charAt(1) === quote) {
+    goog.asserts.assert(s.charAt(s.length - 1) === quote && s.charAt(s.length - 2) === quote);
+    s = s.substr(2, s.length - 4);
+  }
+  if (rawmode || s.indexOf("\\") === -1) {
+    return strobj(decodeUtf8(s));
+  }
+  return strobj(decodeEscape(s, quote));
+}
+function parsestrplus(c, n) {
+  var i;
+  var ret;
+  REQ(CHILD(n, 0), TOK.T_STRING);
+  ret = new Sk.builtin.str("");
+  for (i = 0; i < NCH(n); ++i) {
+    try {
+      ret = ret.sq$concat(parsestr(c, CHILD(n, i).value));
+    } catch (x) {
+      throw new Sk.builtin.SyntaxError("invalid string (possibly contains a unicode character)", c.c_filename, CHILD(n, i).lineno);
+    }
+  }
+  return ret;
+}
+function parsenumber(c, s, lineno) {
+  var neg;
+  var val;
+  var tmp;
+  var end = s.charAt(s.length - 1);
+
+  // call internal complex type constructor for complex strings
+  if (end === "j" || end === "J") {
+    return Sk.builtin.complex.complex_subtype_from_string(s);
+  }
+
+  // Handle longs
+  if (end === "l" || end === "L") {
+    return Sk.longFromStr(s.substr(0, s.length - 1), 0);
+  }
+
+  // todo; we don't currently distinguish between int and float so
+  // str is wrong for these.
+  if (s.indexOf(".") !== -1) {
+    return new Sk.builtin.float_(parseFloat(s));
+  }
+
+  // Handle integers of various bases
+  tmp = s;
+  neg = false;
+  if (s.charAt(0) === "-") {
+    tmp = s.substr(1);
+    neg = true;
+  }
+  if (tmp.charAt(0) === "0" && (tmp.charAt(1) === "x" || tmp.charAt(1) === "X")) {
+    // Hex
+    tmp = tmp.substring(2);
+    val = parseInt(tmp, 16);
+  } else if (s.indexOf("e") !== -1 || s.indexOf("E") !== -1) {
+    // Float with exponent (needed to make sure e/E wasn't hex first)
+    return new Sk.builtin.float_(parseFloat(s));
+  } else if (tmp.charAt(0) === "0" && (tmp.charAt(1) === "b" || tmp.charAt(1) === "B")) {
+    // Binary
+    tmp = tmp.substring(2);
+    val = parseInt(tmp, 2);
+  } else if (tmp.charAt(0) === "0") {
+    if (tmp === "0") {
+      // Zero
+      val = 0;
+    } else {
+      // Octal
+      tmp = tmp.substring(1);
+      if (tmp.charAt(0) === "o" || tmp.charAt(0) === "O") {
+        tmp = tmp.substring(1);
+      }
+      val = parseInt(tmp, 8);
+    }
+  } else {
+    // Decimal
+    val = parseInt(tmp, 10);
+  }
+
+  // Convert to long
+  if (val > Sk.builtin.int_.threshold$ && Math.floor(val) === val && s.indexOf("e") === -1 && s.indexOf("E") === -1) {
+    return Sk.longFromStr(s, 0);
+  }
+
+  // Small enough, return parsed number
+  if (neg) {
+    return new Sk.builtin.int_(-val);
+  } else {
+    return new Sk.builtin.int_(val);
+  }
+}
+function astForSlice(c, n) {
+  var n2;
+  var step;
+  var upper;
+  var lower;
+  var ch;
+  REQ(n, SYM.subscript);
+
+  /*
+   subscript: '.' '.' '.' | test | [test] ':' [test] [sliceop]
+   sliceop: ':' [test]
+   */
+  ch = CHILD(n, 0);
+  lower = null;
+  upper = null;
+  step = null;
+  if (ch.type === TOK.T_DOT) {
+    return new Ellipsis();
+  }
+  if (NCH(n) === 1 && ch.type === SYM.test) {
+    return new Index(astForExpr(c, ch));
+  }
+  if (ch.type === SYM.test) {
+    lower = astForExpr(c, ch);
+  }
+  if (ch.type === TOK.T_COLON) {
+    if (NCH(n) > 1) {
+      n2 = CHILD(n, 1);
+      if (n2.type === SYM.test) {
+        upper = astForExpr(c, n2);
+      }
+    }
+  } else if (NCH(n) > 2) {
+    n2 = CHILD(n, 2);
+    if (n2.type === SYM.test) {
+      upper = astForExpr(c, n2);
+    }
+  }
+  ch = CHILD(n, NCH(n) - 1);
+  if (ch.type === SYM.sliceop) {
+    if (NCH(ch) === 1) {
+      ch = CHILD(ch, 0);
+      step = new Name(strobj("None"), Load, ch.lineno, ch.col_offset);
+    } else {
+      ch = CHILD(ch, 1);
+      if (ch.type === SYM.test) {
+        step = astForExpr(c, ch);
+      }
+    }
+  }
+  return new Slice(lower, upper, step);
+}
+function astForAtom(c, n) {
+  /* atom: ('(' [yield_expr|testlist_comp] ')' |
+     '[' [listmaker] ']' |
+     '{' [dictorsetmaker] '}' |
+     '`' testlist1 '`' |
+     NAME | NUMBER | STRING+)
+  */
+  var i;
+  var values;
+  var keys;
+  var size;
+  var ch = CHILD(n, 0);
+  var elts;
+  switch (ch.type) {
+    case TOK.T_NAME:
+      // All names start in Load context, but may be changed later
+      return new Name(strobj(ch.value), Load, n.lineno, n.col_offset);
+    case TOK.T_STRING:
+      return new Str(parsestrplus(c, n), n.lineno, n.col_offset);
+    case TOK.T_NUMBER:
+      return new Num(parsenumber(c, ch.value, n.lineno), n.lineno, n.col_offset);
+    case TOK.T_LPAR:
+      // various uses for parens
+      ch = CHILD(n, 1);
+      if (ch.type === TOK.T_RPAR) {
+        return new Tuple([], Load, n.lineno, n.col_offset);
+      }
+      if (ch.type === SYM.yield_expr) {
+        return astForExpr(c, ch);
+      }
+      //            if (NCH(ch) > 1 && CHILD(ch, 1).type === SYM.comp_for) {
+      //                return astForComprehension(c, ch);
+      //            }
+      return astForTestlistComp(c, ch);
+    case TOK.T_LSQB:
+      // list or listcomp
+      ch = CHILD(n, 1);
+      if (ch.type === TOK.T_RSQB) {
+        return new List([], Load, n.lineno, n.col_offset);
+      }
+      REQ(ch, SYM.listmaker);
+      if (NCH(ch) === 1 || CHILD(ch, 1).type === TOK.T_COMMA) {
+        return new List(seqForTestlist(c, ch), Load, n.lineno, n.col_offset);
+      }
+      return astForListcomp(c, ch);
+    case TOK.T_LBRACE:
+      /* dictorsetmaker:
+       *     (test ':' test (comp_for : (',' test ':' test)* [','])) |
+       *     (test (comp_for | (',' test)* [',']))
+       */
+      keys = [];
+      values = [];
+      ch = CHILD(n, 1);
+      if (n.type === TOK.T_RBRACE) {
+        //it's an empty dict
+        return new Dict([], null, n.lineno, n.col_offset);
+      } else if (NCH(ch) === 1 || NCH(ch) !== 0 && CHILD(ch, 1).type === TOK.T_COMMA) {
+        //it's a simple set
+        elts = [];
+        size = Math.floor((NCH(ch) + 1) / 2);
+        for (i = 0; i < NCH(ch); i += 2) {
+          var expression = astForExpr(c, CHILD(ch, i));
+          elts[i / 2] = expression;
+        }
+        return new Set(elts, n.lineno, n.col_offset);
+      } else if (NCH(ch) !== 0 && CHILD(ch, 1).type == SYM.comp_for) {
+        //it's a set comprehension
+        return astForSetComp(c, ch);
+      } else if (NCH(ch) > 3 && CHILD(ch, 3).type === SYM.comp_for) {
+        //it's a dict compr. I think.
+        return astForDictComp(c, ch);
+      } else {
+        size = Math.floor((NCH(ch) + 1) / 4); // + 1 for no trailing comma case
+        for (i = 0; i < NCH(ch); i += 4) {
+          keys[i / 4] = astForExpr(c, CHILD(ch, i));
+          values[i / 4] = astForExpr(c, CHILD(ch, i + 2));
+        }
+        return new Dict(keys, values, n.lineno, n.col_offset);
+      }
+    case TOK.T_BACKQUOTE:
+      //throw new Sk.builtin.SyntaxError("backquote not supported, use repr()", c.c_filename, n.lineno);
+      return new Repr(astForTestlist(c, CHILD(n, 1)), n.lineno, n.col_offset);
+    default:
+      goog.asserts.fail("unhandled atom", ch.type);
+  }
+}
+function astForPower(c, n) {
+  /* power: atom trailer* ('**' factor)*
+   */
+  var f;
+  var tmp;
+  var ch;
+  var i;
+  var e;
+  REQ(n, SYM.power);
+  e = astForAtom(c, CHILD(n, 0));
+  if (NCH(n) === 1) {
+    return e;
+  }
+  for (i = 1; i < NCH(n); ++i) {
+    ch = CHILD(n, i);
+    if (ch.type !== SYM.trailer) {
+      break;
+    }
+    tmp = astForTrailer(c, ch, e);
+    tmp.lineno = e.lineno;
+    tmp.col_offset = e.col_offset;
+    e = tmp;
+  }
+  if (CHILD(n, NCH(n) - 1).type === SYM.factor) {
+    f = astForExpr(c, CHILD(n, NCH(n) - 1));
+    e = new BinOp(e, Pow, f, n.lineno, n.col_offset);
+  }
+  return e;
+}
+function astForExpr(c, n) {
+  /* handle the full range of simple expressions
+   test: or_test ['if' or_test 'else' test] | lambdef
+   or_test: and_test ('or' and_test)*
+   and_test: not_test ('and' not_test)*
+   not_test: 'not' not_test | comparison
+   comparison: expr (comp_op expr)*
+   expr: xor_expr ('|' xor_expr)*
+   xor_expr: and_expr ('^' and_expr)*
+   and_expr: shift_expr ('&' shift_expr)*
+   shift_expr: arith_expr (('<<'|'>>') arith_expr)*
+   arith_expr: term (('+'|'-') term)*
+   term: factor (('*'|'/'|'%'|'//') factor)*
+   factor: ('+'|'-'|'~') factor | power
+   power: atom trailer* ('**' factor)*
+    As well as modified versions that exist for backward compatibility,
+   to explicitly allow:
+   [ x for x in lambda: 0, lambda: 1 ]
+   (which would be ambiguous without these extra rules)
+    old_test: or_test | old_lambdef
+   old_lambdef: 'lambda' [vararglist] ':' old_test
+    */
+
+  var exp;
+  var cmps;
+  var ops;
+  var i;
+  var seq;
+  LOOP: while (true) {
+    switch (n.type) {
+      case SYM.test:
+      case SYM.old_test:
+        if (CHILD(n, 0).type === SYM.lambdef || CHILD(n, 0).type === SYM.old_lambdef) {
+          return astForLambdef(c, CHILD(n, 0));
+        } else if (NCH(n) > 1) {
+          return astForIfexpr(c, n);
+        }
+      // fallthrough
+      case SYM.or_test:
+      case SYM.and_test:
+        if (NCH(n) === 1) {
+          n = CHILD(n, 0);
+          continue LOOP;
+        }
+        seq = [];
+        for (i = 0; i < NCH(n); i += 2) {
+          seq[i / 2] = astForExpr(c, CHILD(n, i));
+        }
+        if (CHILD(n, 1).value === "and") {
+          return new BoolOp(And, seq, n.lineno, n.col_offset);
+        }
+        goog.asserts.assert(CHILD(n, 1).value === "or");
+        return new BoolOp(Or, seq, n.lineno, n.col_offset);
+      case SYM.not_test:
+        if (NCH(n) === 1) {
+          n = CHILD(n, 0);
+          continue LOOP;
+        } else {
+          return new UnaryOp(Not, astForExpr(c, CHILD(n, 1)), n.lineno, n.col_offset);
+        }
+        break;
+      case SYM.comparison:
+        if (NCH(n) === 1) {
+          n = CHILD(n, 0);
+          continue LOOP;
+        } else {
+          ops = [];
+          cmps = [];
+          for (i = 1; i < NCH(n); i += 2) {
+            ops[(i - 1) / 2] = astForCompOp(c, CHILD(n, i));
+            cmps[(i - 1) / 2] = astForExpr(c, CHILD(n, i + 1));
+          }
+          return new Compare(astForExpr(c, CHILD(n, 0)), ops, cmps, n.lineno, n.col_offset);
+        }
+        break;
+      case SYM.expr:
+      case SYM.xor_expr:
+      case SYM.and_expr:
+      case SYM.shift_expr:
+      case SYM.arith_expr:
+      case SYM.term:
+        if (NCH(n) === 1) {
+          n = CHILD(n, 0);
+          continue LOOP;
+        }
+        return astForBinop(c, n);
+      case SYM.yield_expr:
+        exp = null;
+        if (NCH(n) === 2) {
+          exp = astForTestlist(c, CHILD(n, 1));
+        }
+        return new Yield(exp, n.lineno, n.col_offset);
+      case SYM.factor:
+        if (NCH(n) === 1) {
+          n = CHILD(n, 0);
+          continue LOOP;
+        }
+        return astForFactor(c, n);
+      case SYM.power:
+        return astForPower(c, n);
+      default:
+        goog.asserts.fail("unhandled expr", "n.type: %d", n.type);
+    }
+    break;
+  }
+}
+function astForPrintStmt(c, n) {
+  /* print_stmt: 'print' ( [ test (',' test)* [','] ]
+   | '>>' test [ (',' test)+ [','] ] )
+   */
+  var nl;
+  var i, j;
+  var seq;
+  var start = 1;
+  var dest = null;
+  REQ(n, SYM.print_stmt);
+  if (NCH(n) >= 2 && CHILD(n, 1).type === TOK.T_RIGHTSHIFT) {
+    dest = astForExpr(c, CHILD(n, 2));
+    start = 4;
+  }
+  seq = [];
+  for (i = start, j = 0; i < NCH(n); i += 2, ++j) {
+    seq[j] = astForExpr(c, CHILD(n, i));
+  }
+  nl = CHILD(n, NCH(n) - 1).type === TOK.T_COMMA ? false : true;
+  return new Print(dest, seq, nl, n.lineno, n.col_offset);
+}
+function astForStmt(c, n) {
+  var ch;
+  if (n.type === SYM.stmt) {
+    goog.asserts.assert(NCH(n) === 1);
+    n = CHILD(n, 0);
+  }
+  if (n.type === SYM.simple_stmt) {
+    goog.asserts.assert(numStmts(n) === 1);
+    n = CHILD(n, 0);
+  }
+  if (n.type === SYM.small_stmt) {
+    REQ(n, SYM.small_stmt);
+    n = CHILD(n, 0);
+    /* small_stmt: expr_stmt | print_stmt  | del_stmt | pass_stmt
+     | flow_stmt | import_stmt | global_stmt | exec_stmt
+     | assert_stmt
+     */
+    switch (n.type) {
+      case SYM.expr_stmt:
+        return astForExprStmt(c, n);
+      case SYM.print_stmt:
+        return astForPrintStmt(c, n);
+      case SYM.del_stmt:
+        return astForDelStmt(c, n);
+      case SYM.pass_stmt:
+        return new Pass(n.lineno, n.col_offset);
+      case SYM.flow_stmt:
+        return astForFlowStmt(c, n);
+      case SYM.import_stmt:
+        return astForImportStmt(c, n);
+      case SYM.global_stmt:
+        return astForGlobalStmt(c, n);
+      case SYM.exec_stmt:
+        return astForExecStmt(c, n);
+      case SYM.assert_stmt:
+        return astForAssertStmt(c, n);
+      case SYM.debugger_stmt:
+        return new Debugger_(n.lineno, n.col_offset);
+      default:
+        goog.asserts.fail("unhandled small_stmt");
+    }
+  } else {
+    /* compound_stmt: if_stmt | while_stmt | for_stmt | try_stmt
+     | funcdef | classdef | decorated
+     */
+    ch = CHILD(n, 0);
+    REQ(n, SYM.compound_stmt);
+    switch (ch.type) {
+      case SYM.if_stmt:
+        return astForIfStmt(c, ch);
+      case SYM.while_stmt:
+        return astForWhileStmt(c, ch);
+      case SYM.for_stmt:
+        return astForForStmt(c, ch);
+      case SYM.try_stmt:
+        return astForTryStmt(c, ch);
+      case SYM.with_stmt:
+        return astForWithStmt(c, ch);
+      case SYM.funcdef:
+        return astForFuncdef(c, ch, []);
+      case SYM.classdef:
+        return astForClassdef(c, ch, []);
+      case SYM.decorated:
+        return astForDecorated(c, ch);
+      default:
+        goog.asserts.assert("unhandled compound_stmt");
+    }
+  }
+}
+Sk.astFromParse = function (n, filename, c_flags) {
+  var j;
+  var num;
+  var ch;
+  var i;
+  var c = new Compiling("utf-8", filename, c_flags);
+  var stmts = [];
+  var k = 0;
+  switch (n.type) {
+    case SYM.file_input:
+      for (i = 0; i < NCH(n) - 1; ++i) {
+        ch = CHILD(n, i);
+        if (n.type === TOK.T_NEWLINE) {
+          continue;
+        }
+        REQ(ch, SYM.stmt);
+        num = numStmts(ch);
+        if (num === 1) {
+          stmts[k++] = astForStmt(c, ch);
+        } else {
+          ch = CHILD(ch, 0);
+          REQ(ch, SYM.simple_stmt);
+          for (j = 0; j < num; ++j) {
+            stmts[k++] = astForStmt(c, CHILD(ch, j * 2));
+          }
+        }
+      }
+      return new Module(stmts);
+    case SYM.eval_input:
+      goog.asserts.fail("todo;");
+    case SYM.single_input:
+      goog.asserts.fail("todo;");
+    default:
+      goog.asserts.fail("todo;");
+  }
+};
+Sk.astDump = function (node) {
+  var spaces = function (n)
+  // todo; blurgh
+  {
+    var i;
+    var ret = "";
+    for (i = 0; i < n; ++i) {
+      ret += " ";
+    }
+    return ret;
+  };
+  var _format = function (node, indent) {
+    var ret;
+    var elemsstr;
+    var x;
+    var elems;
+    var fieldstr;
+    var field;
+    var attrs;
+    var fieldlen;
+    var b;
+    var a;
+    var i;
+    var fields;
+    var namelen;
+    if (node === null) {
+      return indent + "None";
+    } else if (node.prototype && node.prototype._astname !== undefined && node.prototype._isenum) {
+      return indent + node.prototype._astname + "()";
+    } else if (node._astname !== undefined) {
+      namelen = spaces(node._astname.length + 1);
+      fields = [];
+      for (i = 0; i < node._fields.length; i += 2)
+      // iter_fields
+      {
+        a = node._fields[i]; // field name
+        b = node._fields[i + 1](node); // field getter func
+        fieldlen = spaces(a.length + 1);
+        fields.push([a, _format(b, indent + namelen + fieldlen)]);
+      }
+      attrs = [];
+      for (i = 0; i < fields.length; ++i) {
+        field = fields[i];
+        attrs.push(field[0] + "=" + field[1].replace(/^\s+/, ""));
+      }
+      fieldstr = attrs.join(",\n" + indent + namelen);
+      return indent + node._astname + "(" + fieldstr + ")";
+    } else if (goog.isArrayLike(node)) {
+      //Sk.debugout("arr", node.length);
+      elems = [];
+      for (i = 0; i < node.length; ++i) {
+        x = node[i];
+        elems.push(_format(x, indent + " "));
+      }
+      elemsstr = elems.join(",\n");
+      return indent + "[" + elemsstr.replace(/^\s+/, "") + "]";
+    } else {
+      if (node === true) {
+        ret = "True";
+      } else if (node === false) {
+        ret = "False";
+      } else if (node instanceof Sk.builtin.lng) {
+        ret = node.tp$str().v;
+      } else if (node instanceof Sk.builtin.str) {
+        ret = node["$r"]().v;
+      } else {
+        ret = "" + node;
+      }
+      return indent + ret;
+    }
+  };
+  return _format(node, "");
+};
+goog.exportSymbol("Sk.astFromParse", Sk.astFromParse);
+goog.exportSymbol("Sk.astDump", Sk.astDump);
+
+/* ---- /Users/rob/skulpty/lib/afterword.js ---- */
+
+function wrapAstThing(fx, argpos, debug) {
+  argpos = argpos || 2;
+  return function (x) {
+    var n = arguments[argpos - 1];
+    var result = fx.apply(undefined, arguments);
+    result.range = n.range;
+    result.str = n.str;
+    result.loc = n.loc;
+    if (debug) {
+      console.log(n);
+      console.log(result);
+    }
+    return result;
+  };
+}
+astForAtom = wrapAstThing(astForAtom);
+astForCompOp = wrapAstThing(astForCompOp);
+astForSuite = wrapAstThing(astForSuite);
+astForExceptClause = wrapAstThing(astForExceptClause);
+astForDottedName = wrapAstThing(astForDottedName);
+astForDecorator = wrapAstThing(astForDecorator);
+astForDecorators = wrapAstThing(astForDecorators);
+astForDecorated = wrapAstThing(astForDecorated);
+astForWithVar = wrapAstThing(astForWithVar);
+astForWithStmt = wrapAstThing(astForWithStmt);
+astForExecStmt = wrapAstThing(astForExecStmt);
+astForIfStmt = wrapAstThing(astForIfStmt);
+astForExprlist = wrapAstThing(astForExprlist);
+astForDelStmt = wrapAstThing(astForDelStmt);
+astForGlobalStmt = wrapAstThing(astForGlobalStmt);
+astForAssertStmt = wrapAstThing(astForAssertStmt);
+astForImportStmt = wrapAstThing(astForImportStmt);
+astForTestlistComp = wrapAstThing(astForTestlistComp);
+astForListcomp = wrapAstThing(astForListcomp);
+astForFactor = wrapAstThing(astForFactor);
+astForForStmt = wrapAstThing(astForForStmt);
+astForTrailer = wrapAstThing(astForTrailer);
+astForFlowStmt = wrapAstThing(astForFlowStmt);
+astForArguments = wrapAstThing(astForArguments);
+astForFuncdef = wrapAstThing(astForFuncdef);
+astForClassBases = wrapAstThing(astForClassBases);
+astForClassdef = wrapAstThing(astForClassdef);
+astForLambdef = wrapAstThing(astForLambdef);
+astForComprehension = wrapAstThing(astForComprehension);
+astForIterComp = wrapAstThing(astForIterComp);
+astForDictComp = wrapAstThing(astForDictComp);
+astForGenExpr = wrapAstThing(astForGenExpr);
+astForSetComp = wrapAstThing(astForSetComp);
+astForWhileStmt = wrapAstThing(astForWhileStmt);
+astForAugassign = wrapAstThing(astForAugassign);
+astForBinop = wrapAstThing(astForBinop);
+astForTestlist = wrapAstThing(astForTestlist);
+astForExprStmt = wrapAstThing(astForExprStmt);
+astForIfexpr = wrapAstThing(astForIfexpr);
+astForExpr = wrapAstThing(astForExpr);
+Sk.astFromParse = wrapAstThing(Sk.astFromParse, 1);
+Sk.nameForToken = function (v) {
+  if (typeof v === "string") return v;
+  for (var name in Sk.Tokenizer.Tokens) {
+    if (Sk.Tokenizer.Tokens[name] == v) return name;
+  }
+  if (v in Sk.ParseTables.number2symbol) {
+    return Sk.ParseTables.number2symbol[v];
+  }
+  return '???:' + v;
+};
+
+//Sk.python3 = true;
+Sk.Parser = Parser;
+Sk.builtin.str.prototype.valueOf = function () {
+  return this.v;
+};
+Sk.builtin.str.prototype.toString = function () {
+  return this.v;
+};
+Sk.builtin.SyntaxError = function (str, file, line, ctx, extra) {
+  var err = new SyntaxError(str, file, line);
+  err.context = ctx;
+  err.extra = extra;
+  err.line = line;
+  return err;
+};
+Sk.builtin.IndentationError = function (str, file, line, row, extra) {
+  var err = new SyntaxError('Indentation Error: ' + str, file, line);
+  err.context = [[line, row], [line, row]];
+  err.extra = {};
+  err.line = line;
+  return err;
+};
+
+// module.exports = Sk;
+
+// var Sk = require('../lib/skulpt.js');
+// var transform = require('./transform.js');
+// var improveError = require('./errors.js');
+
+// 'use strict';
+
+// var Sk = require('../lib/skulpt.js');
+
+function splat(e) {
+  console.log("GOT ERROR!");
+  console.log(e, e.extra);
+  console.log(JSON.stringify(e.extra.node, function (k, o) {
+    if (k == 'type') return Sk.nameForToken(o);else if (k == 'children') return o;else if (k === '') return o;else if (!isNaN(parseInt(k))) return o;else return undefined;
+  }, '  '));
+}
+function improveError(e, options, code) {
+  var r;
+  if (e.context && e.context.length > 0) {
+    r = e.context[0];
+  }
+  if (e.extra && e.extra.node) {
+    if (!r) {
+      r = [e.extra.node.loc.start.line, e.extra.node.loc.start.column];
+    }
+  }
+  if (r) {
+    setErrorPos(e, r[0], r[1]);
+  }
+  if (options.friendlyErrors && e.extra) {
+    e.message = makeErrorFriendly(e, code);
+  }
+}
+function setErrorPos(e, line, col) {
+  e.loc = {
+    line: line,
+    column: col
+  };
+  e.line = line;
+  e.column = col;
+}
+function friendlyString(s) {
+  switch (s) {
+    case 'if_stmt':
+      return 'if statement';
+    case 'while_stmt':
+      return 'while statement';
+    case 'funcdef':
+      return 'function';
+    default:
+      return '?' + s + '?';
+  }
+}
+function nodeToType(n) {
+  var type = Sk.nameForToken(n.type);
+  if (type === 'suite') return nodeToType(n.children[0]);
+  return friendlyString(type);
+}
+function makeErrorFriendly(e, code) {
+  //console.log("EX", e.message, e.extra);
+  if (e.extra.kind == "DAG_MISS") {
+    if (e.extra.expected.indexOf('T_COLON') !== -1) {
+      //We might be missing a colon.
+      var after = (e.context && e.context[2] ? e.context[2] : e.extra.found_val).replace(/\s+$/, '');
+      var lc = e.extra.node.children[e.extra.node.children.length - 1];
+      if (lc.value === 'else') after = 'else';
+      if (e.extra.found == 'T_SEMI') {
+        return "Replace the `;` at the end of `" + after + "` with a `:`";
+      } else if (e.extra.found == 'T_NEWLINE') {
+        return "Need a `:` on the end of the line following `" + after + "`.";
+      } else if (e.extra.found == 'T_NAME') {
+        return "Need a `:` after `" + after + "`.";
+      } else if (e.extra.found == 'T_EQUAL') {
+        return "Can't assign to a variable within the condition of an " + friendlyString(e.extra.inside) + ".  Did you mean to use `==` instead of `=`?";
+      }
+    }
+    if (e.extra.expected.indexOf('T_DEDENT') !== -1) {
+      if (e.extra.found_val.toLowerCase() === 'else') {
+        return "`else` needs to line up with its `if`.";
+      } else {
+        return "Indentation error.";
+      }
+    }
+    if (e.extra.expected.indexOf('T_INDENT') !== -1) {
+      var lc = e.extra.parent || e.extra.node;
+      var name = nodeToType(lc);
+      if (name === 'if statement') {
+        //Scan for the most recent part of the ifstatement.
+        for (var i = 0; i < lc.children.length; ++i) {
+          if (["if", "elif", "else"].indexOf(lc.children[i].value) !== -1) {
+            name = lc.children[i].value + ' statement';
+          }
+        }
+      }
+      if (lc.value === 'else') name = 'else statement';
+      return 'Empty ' + name + '. Put 4 spaces in front of statements inside the ' + name + '.';
+    }
+    if (e.extra.found === 'T_NAME') {
+      switch (e.extra.found_val) {
+        case 'else':
+        case 'elif':
+          return '`' + e.extra.found_val + '` must be paired with an `if`';
+        case 'elseif':
+          return '`elseif` should be shortened to `elif`';
+      }
+    }
+    if (e.extra.found === 'T_AMPER' && e.extra.inside == 'and_expr') {
+      return 'Python uses the word `and` instead of `&&` for boolean AND expressions.';
+    }
+    if (e.extra.inside === 'trailer') {
+      //We are parsing either an arglist or a subscript.
+      if (e.extra.expected.indexOf('T_RPAR') === 0) {
+        //Expected ), must be a arglsit;
+        if (e.line > e.extra.node.lineno) {
+          //Our arglist is incomplete, and we have made it to the next line,.
+          //Likely they just forgot to close their ()'s
+          setErrorPos(e, e.extra.node.lineno, e.extra.node.col_offset);
+          var t = e.extra.node.loc;
+          e.context = [[t.start.line, t.start.column], [t.end.line, t.end.column]];
+          return 'Unclosed `(` in function arguments.' + e.extra.node.lineno;
+        }
+        return 'Function calls paramaters must be seperated by `,`s';
+      }
+    }
+    if (e.extra.found === 'T_INDENT') {
+      if (e.extra.expected.indexOf('stmt') !== -1) {
+        return 'Too much indentation at the beginning of this line.';
+      }
+    }
+    if (e.extra.expected.indexOf('subscriptlist') === 0) {
+      return "Malformed subscript";
+    }
+    if (e.extra.expected.indexOf('T_NEWLINE') !== -1) {
+      var n = e.extra.node;
+      if (e.extra.node.children[0]) {
+        var n = e.extra.node.children[0];
+        var previousType = Sk.nameForToken(n.type);
+        if (previousType == 'small_stmt') {
+          while (n.children && n.children.length == 1) n = n.children[0];
+          var what = code.substring(n.range[0], n.range[1]);
+          return 'If you want to call `' + what + '` as function, you need `()`\'s';
+        }
+      }
+    }
+    return 'Unexpected token: ' + e.message;
+  } else if (e.extra.kind == "CLASSIFY") {
+    if (e.extra.value === '"') return 'Unterminated string. Add a matching `"` at the end of your string.';
+    return 'Unterminated `' + e.extra.value + '`';
+  } else if (e.extra.kind == "STRING_EOF") {
+    return 'Unterminated muti-line string. Add a matching `"""` at the end of your string.';
+  } else if (e.extra.kind == "STATEMENT_EOF") {
+    if (e.extra.parenlev > 0) {
+      var top = e.extra.parenstack[e.extra.parenstack.length - 1];
+      var kind = top[0];
+      var types = '([{';
+      var pair = ')]}';
+      var close = pair[types.indexOf(kind)];
+      setErrorPos(e, top[1], top[2] - 1);
+      return 'Unmatched `' + kind + '`.  Every opening `' + kind + '` needs a closing `' + close + '` to match it.';
+    }
+    return e.message;
+  }
+  return e.message;
+}
+
+//module.exports = improveError;
+
+var defaultOptions = {
+  locations: true,
+  ranges: true,
+  sippets: true,
+  filename: 'file.py',
+  useLet: false,
+  friendlyErrors: true
+};
+function rangeToLoc(x, offsets) {
+  var best = -1;
+  for (var i = 0; i < offsets.length; ++i) {
+    if (offsets[i] > x) break;
+    best = i;
+  }
+  var off = best >= 0 ? offsets[best] : 0;
+  return {
+    line: best + 2,
+    column: x - off,
+    pos: x
+  };
+}
+function locToRange(line, col, offsets) {
+  var loff = 0;
+  if (line >= 2 && line - 2 < offsets.length) loff = offsets[line - 2];
+  return loff + col;
+}
+function decorate(n, code, offsets, options) {
+  var numrange = locToRange(n.lineno, n.col_offset, offsets);
+  var range = [numrange === numrange ? numrange : Infinity, numrange === numrange ? numrange : -Infinity];
+  if (n.value) range[1] += n.value.length;
+  if (n.children) for (var i = 0; i < n.children.length; ++i) {
+    var r = decorate(n.children[i], code, offsets, options);
+    range[0] = Math.min(range[0], r[0]);
+    range[1] = Math.max(range[1], r[1]);
+  }
+  if (options.ranges) n.range = range;
+  if (options.locations) {
+    n.loc = {
+      start: rangeToLoc(range[0], offsets),
+      end: rangeToLoc(range[1], offsets)
+    };
+  }
+  if (options.snippets) n.str = code.substring(range[0], range[1]);
+  return range;
+}
+function parser(code, options) {
+  var lineOffsets = [];
+  var idx = -1;
+  var parse, ast;
+  options = options || {};
+  for (var opt in defaultOptions) {
+    if (!(opt in options)) options[opt] = defaultOptions[opt];
+  }
+  while (true) {
+    idx = code.indexOf("\n", idx + 1);
+    if (idx < 0) break;
+    lineOffsets.push(idx + 1);
+  }
+  try {
+    parse = Sk.parse(options.filename, code);
+    decorate(parse.cst, code, lineOffsets, options);
+    parse.flags = parse.flags | Sk.Parser.CO_FUTURE_UNICODE_LITERALS; //Enable future unicode literals
+    ast = Sk.astFromParse(parse.cst, options.filename, parse.flags);
+  } catch (e) {
+    if (e.extra && e.extra.node) decorate(e.extra.node, code, lineOffsets, options);
+    improveError(e, options, code);
+    if (e.loc) {
+      e.pos = locToRange(e.loc.line, e.loc.column, lineOffsets);
+    }
+    throw e;
+  }
+
+  //console.log(JSON.stringify(ast, null, "  "));
+  var ctx = {
+    varType: options.useLet ? 'let' : 'var'
+  };
+  var js = transform(ast, ctx);
+  return js;
+}
+
+// module.exports = {
+// 	parse: parser,
+// 	pythonRuntime: require('../lib/stdlib.js'),
+// 	defaultOptions: {runtimeParamName: '__pythonRuntime'}
+// };
+
+}).call(this)}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
+},{}],3:[function(require,module,exports){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -634,7 +11052,7 @@ const binOpName = {
   ">>>": "sru",
   "N": "next",
   "n": "kai",
-  "N=": "next",
+  "in": "in",
   "+=": "add",
   "-=": "sub",
   "*=": "mul",
@@ -704,8 +11122,9 @@ function encode(node, reg) {
         }
         return `js::get(${encode(ctx)}, ${encode(node.variable, false)})`;
       } else if (ctx instanceof ir.Scope) {
+        if (node.variable === "undefined") return 'js::Undefined::Undefined';
         const child = ctx.find(node.variable, true);
-        if (!child) throw `No variable named ${node.variable}`;
+        if (!child) throw `No variable named ${JSON.stringify(node)}`;
         return encode(child);
       }
   }
@@ -945,6 +11364,7 @@ class CPP {
           let v = this.method.cached(lookup.variable.value);
           // v.setType(right.declType || right.type);
           ret.push(`${encode(v)} = ${encode(right)};`);
+          ret.push(`if (auto obj = std::get_if<js::Object*>(&${encode(v)}); obj && *obj) (*obj)->setMark();`);
         } else {
           ret.push(`js::set(${encode(ctx)}, ${encode(lookup.variable, true)}, ${encode(right)});`);
         }
@@ -952,7 +11372,7 @@ class CPP {
         ret.push(`js::set(${encode(ctx)}, ${encode(lookup.variable)}, ${encode(right)});`);
       }
     } else if (ctx instanceof ir.Scope) {
-      let v = ctx.find(lookup.variable, true);
+      let v = ctx.find(lookup.variable, true, true);
       if (!v) this.error(`Variable ${lookup.variable} not defined`);
       if (v.kind == "const") {
         v.setDeclType(right.type);
@@ -980,7 +11400,7 @@ class CPP {
         "++": "inc",
         "--": "dec"
       }
-    }[!!node.prefix][node.operator];
+    }[node.prefix === false ? false : true][node.operator];
     let tmp = new ir.Var();
     if (opName == "bitnot") {
       if (lookup.hasCTV) {
@@ -1171,6 +11591,9 @@ class CPP {
         if (tmp.hasCTV) {
           tmp.CTV = left.CTV !== right.CTV;
         }
+        break;
+      case "in":
+        tmp.setDeclType("int32_t");
         break;
       case "or":
         // console.log("CTV ", left.hasCTV, left.name, "(", left.CTV, ")  | ", right.hasCTV, right.name, "(", right.CTV, ")");
@@ -1414,7 +11837,7 @@ function cppWriter(program, opts) {
   return cpp.toString(opts.platform);
 }
 
-},{"./IR.js":1,"./templates/blit.js":27,"./templates/espboy.js":28,"./templates/galuni.js":29,"./templates/meta.js":30,"./templates/pico.js":31,"./templates/pokitto.js":32,"./templates/std.js":33}],3:[function(require,module,exports){
+},{"./IR.js":1,"./templates/blit.js":29,"./templates/espboy.js":30,"./templates/galuni.js":31,"./templates/meta.js":32,"./templates/pico.js":33,"./templates/pokitto.js":34,"./templates/std.js":35}],4:[function(require,module,exports){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -1428,7 +11851,7 @@ function dataProg(ast, program, filename, jsc) {
   return program;
 }
 
-},{}],4:[function(require,module,exports){
+},{}],5:[function(require,module,exports){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -1766,7 +12189,11 @@ class ProgramParser {
       clazz.add(new ir.Deref());
       clazz.add(new ir.Literal(method.name));
       clazz.add(new ir.BinaryExpression("."));
-      clazz.add(new ir.LookUp(method.id));
+      if (method.name == "constructor") {
+        clazz.add(new ir.LookUp(clazz.id));
+      } else {
+        clazz.add(new ir.LookUp(method.id));
+      }
       clazz.add(new ir.AssignmentExpression("="));
       clazz.add(new ir.Pop());
     }
@@ -1951,10 +12378,12 @@ class ProgramParser {
         }
       });
       let args = method.args;
-      if (needsArgs) {
-        args = new ir.Var("var", "arguments");
-        this.scope.add(args);
-      }
+
+      // if (needsArgs) {
+      //     args = new ir.Var("var", "arguments");
+      //     this.scope.add(args);
+      // }
+
       const argc = needsArgc ? new ir.Var("var") : null;
       if (argc) {
         this.scope.add(argc);
@@ -2035,7 +12464,7 @@ function esProg(ast, program, filename, jsc) {
   return program;
 }
 
-},{"./IR.js":1,"./node_modules/esprima/dist/esprima.js":10}],5:[function(require,module,exports){
+},{"./IR.js":1,"./node_modules/esprima/dist/esprima.js":11}],6:[function(require,module,exports){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -2080,7 +12509,7 @@ function jsWriter(program, opts) {
   return R + '\n' + program.sourceAST.map(ast => toString(ast)).join('\n');
 }
 
-},{"./IR.js":1,"escodegen":8}],6:[function(require,module,exports){
+},{"./IR.js":1,"escodegen":9}],7:[function(require,module,exports){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -2088,6 +12517,7 @@ Object.defineProperty(exports, "__esModule", {
 });
 exports.JSC = void 0;
 var _esProg = require("./esProg.js");
+var _pyProg = require("./pyProg.js");
 var _dataProg = require("./dataProg.js");
 var _cppWriter = require("./cppWriter.js");
 var _jsWriter = require("./jsWriter.js");
@@ -2102,6 +12532,7 @@ const writers = {
 };
 const transformers = {
   js: [_esProg.esAST, _esProg.esProg],
+  py: [_pyProg.pyAST, _esProg.esProg],
   raw: [_dataProg.dataProg],
   u32: [JSON.parse, obj => {
     obj.type = 'uint32_t';
@@ -2210,7 +12641,7 @@ function print(ast) {
   console.log(JSON.stringify(ast, 0, 4));
 }
 
-},{"./IR.js":1,"./cppWriter.js":2,"./dataProg.js":3,"./esProg.js":4,"./jsWriter.js":5,"./jsonWriter.js":7}],7:[function(require,module,exports){
+},{"./IR.js":1,"./cppWriter.js":3,"./dataProg.js":4,"./esProg.js":5,"./jsWriter.js":6,"./jsonWriter.js":8,"./pyProg.js":28}],8:[function(require,module,exports){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -2221,7 +12652,7 @@ function jsonWriter(program) {
   return JSON.stringify(program, 0, 2);
 }
 
-},{}],8:[function(require,module,exports){
+},{}],9:[function(require,module,exports){
 (function (global){(function (){
 /*
   Copyright (C) 2012-2014 Yusuke Suzuki <utatane.tea@gmail.com>
@@ -4872,7 +15303,7 @@ function jsonWriter(program) {
 /* vim: set sw=4 ts=4 et tw=80 : */
 
 }).call(this)}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"./package.json":9,"estraverse":11,"esutils":15,"source-map":26}],9:[function(require,module,exports){
+},{"./package.json":10,"estraverse":12,"esutils":16,"source-map":27}],10:[function(require,module,exports){
 module.exports={
     "name": "escodegen",
     "description": "ECMAScript code generator",
@@ -4936,7 +15367,7 @@ module.exports={
     }
 }
 
-},{}],10:[function(require,module,exports){
+},{}],11:[function(require,module,exports){
 (function webpackUniversalModuleDefinition(root, factory) {
 /* istanbul ignore next */
 	if(typeof exports === 'object' && typeof module === 'object')
@@ -11646,7 +22077,7 @@ return /******/ (function(modules) { // webpackBootstrap
 /******/ ])
 });
 ;
-},{}],11:[function(require,module,exports){
+},{}],12:[function(require,module,exports){
 /*
   Copyright (C) 2012-2013 Yusuke Suzuki <utatane.tea@gmail.com>
   Copyright (C) 2012 Ariya Hidayat <ariya.hidayat@gmail.com>
@@ -12453,7 +22884,7 @@ return /******/ (function(modules) { // webpackBootstrap
 }(exports));
 /* vim: set sw=4 ts=4 et tw=80 : */
 
-},{}],12:[function(require,module,exports){
+},{}],13:[function(require,module,exports){
 /*
   Copyright (C) 2013 Yusuke Suzuki <utatane.tea@gmail.com>
 
@@ -12599,7 +23030,7 @@ return /******/ (function(modules) { // webpackBootstrap
 }());
 /* vim: set sw=4 ts=4 et tw=80 : */
 
-},{}],13:[function(require,module,exports){
+},{}],14:[function(require,module,exports){
 /*
   Copyright (C) 2013-2014 Yusuke Suzuki <utatane.tea@gmail.com>
   Copyright (C) 2014 Ivan Nikulin <ifaaan@gmail.com>
@@ -12736,7 +23167,7 @@ return /******/ (function(modules) { // webpackBootstrap
 }());
 /* vim: set sw=4 ts=4 et tw=80 : */
 
-},{}],14:[function(require,module,exports){
+},{}],15:[function(require,module,exports){
 /*
   Copyright (C) 2013 Yusuke Suzuki <utatane.tea@gmail.com>
 
@@ -12903,7 +23334,7 @@ return /******/ (function(modules) { // webpackBootstrap
 }());
 /* vim: set sw=4 ts=4 et tw=80 : */
 
-},{"./code":13}],15:[function(require,module,exports){
+},{"./code":14}],16:[function(require,module,exports){
 /*
   Copyright (C) 2013 Yusuke Suzuki <utatane.tea@gmail.com>
 
@@ -12938,7 +23369,7 @@ return /******/ (function(modules) { // webpackBootstrap
 }());
 /* vim: set sw=4 ts=4 et tw=80 : */
 
-},{"./ast":12,"./code":13,"./keyword":14}],16:[function(require,module,exports){
+},{"./ast":13,"./code":14,"./keyword":15}],17:[function(require,module,exports){
 /* -*- Mode: js; js-indent-level: 2; -*- */
 /*
  * Copyright 2011 Mozilla Foundation and contributors
@@ -13061,7 +23492,7 @@ ArraySet.prototype.toArray = function ArraySet_toArray() {
 
 exports.ArraySet = ArraySet;
 
-},{"./util":25}],17:[function(require,module,exports){
+},{"./util":26}],18:[function(require,module,exports){
 /* -*- Mode: js; js-indent-level: 2; -*- */
 /*
  * Copyright 2011 Mozilla Foundation and contributors
@@ -13203,7 +23634,7 @@ exports.decode = function base64VLQ_decode(aStr, aIndex, aOutParam) {
   aOutParam.rest = aIndex;
 };
 
-},{"./base64":18}],18:[function(require,module,exports){
+},{"./base64":19}],19:[function(require,module,exports){
 /* -*- Mode: js; js-indent-level: 2; -*- */
 /*
  * Copyright 2011 Mozilla Foundation and contributors
@@ -13272,7 +23703,7 @@ exports.decode = function (charCode) {
   return -1;
 };
 
-},{}],19:[function(require,module,exports){
+},{}],20:[function(require,module,exports){
 /* -*- Mode: js; js-indent-level: 2; -*- */
 /*
  * Copyright 2011 Mozilla Foundation and contributors
@@ -13385,7 +23816,7 @@ exports.search = function search(aNeedle, aHaystack, aCompare, aBias) {
   return index;
 };
 
-},{}],20:[function(require,module,exports){
+},{}],21:[function(require,module,exports){
 /* -*- Mode: js; js-indent-level: 2; -*- */
 /*
  * Copyright 2014 Mozilla Foundation and contributors
@@ -13466,7 +23897,7 @@ MappingList.prototype.toArray = function MappingList_toArray() {
 
 exports.MappingList = MappingList;
 
-},{"./util":25}],21:[function(require,module,exports){
+},{"./util":26}],22:[function(require,module,exports){
 /* -*- Mode: js; js-indent-level: 2; -*- */
 /*
  * Copyright 2011 Mozilla Foundation and contributors
@@ -13582,7 +24013,7 @@ exports.quickSort = function (ary, comparator) {
   doQuickSort(ary, comparator, 0, ary.length - 1);
 };
 
-},{}],22:[function(require,module,exports){
+},{}],23:[function(require,module,exports){
 /* -*- Mode: js; js-indent-level: 2; -*- */
 /*
  * Copyright 2011 Mozilla Foundation and contributors
@@ -14729,7 +25160,7 @@ IndexedSourceMapConsumer.prototype._parseMappings =
 
 exports.IndexedSourceMapConsumer = IndexedSourceMapConsumer;
 
-},{"./array-set":16,"./base64-vlq":17,"./binary-search":19,"./quick-sort":21,"./util":25}],23:[function(require,module,exports){
+},{"./array-set":17,"./base64-vlq":18,"./binary-search":20,"./quick-sort":22,"./util":26}],24:[function(require,module,exports){
 /* -*- Mode: js; js-indent-level: 2; -*- */
 /*
  * Copyright 2011 Mozilla Foundation and contributors
@@ -15156,7 +25587,7 @@ SourceMapGenerator.prototype.toString =
 
 exports.SourceMapGenerator = SourceMapGenerator;
 
-},{"./array-set":16,"./base64-vlq":17,"./mapping-list":20,"./util":25}],24:[function(require,module,exports){
+},{"./array-set":17,"./base64-vlq":18,"./mapping-list":21,"./util":26}],25:[function(require,module,exports){
 /* -*- Mode: js; js-indent-level: 2; -*- */
 /*
  * Copyright 2011 Mozilla Foundation and contributors
@@ -15571,7 +26002,7 @@ SourceNode.prototype.toStringWithSourceMap = function SourceNode_toStringWithSou
 
 exports.SourceNode = SourceNode;
 
-},{"./source-map-generator":23,"./util":25}],25:[function(require,module,exports){
+},{"./source-map-generator":24,"./util":26}],26:[function(require,module,exports){
 /* -*- Mode: js; js-indent-level: 2; -*- */
 /*
  * Copyright 2011 Mozilla Foundation and contributors
@@ -16061,7 +26492,7 @@ function computeSourceURL(sourceRoot, sourceURL, sourceMapURL) {
 }
 exports.computeSourceURL = computeSourceURL;
 
-},{}],26:[function(require,module,exports){
+},{}],27:[function(require,module,exports){
 /*
  * Copyright 2009-2011 Mozilla Foundation and contributors
  * Licensed under the New BSD license. See LICENSE.txt or:
@@ -16071,7 +26502,24 @@ exports.SourceMapGenerator = require('./lib/source-map-generator').SourceMapGene
 exports.SourceMapConsumer = require('./lib/source-map-consumer').SourceMapConsumer;
 exports.SourceNode = require('./lib/source-node').SourceNode;
 
-},{"./lib/source-map-consumer":22,"./lib/source-map-generator":23,"./lib/source-node":24}],27:[function(require,module,exports){
+},{"./lib/source-map-consumer":23,"./lib/source-map-generator":24,"./lib/source-node":25}],28:[function(require,module,exports){
+"use strict";
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.pyAST = pyAST;
+var _PythonParser = require("./PythonParser.js");
+function pyAST(source, program, path) {
+  const ast = (0, _PythonParser.parser)(source, {
+    filename: path
+  });
+  ast.file = path;
+  console.log(JSON.stringify(ast, 0, 4));
+  return ast;
+}
+
+},{"./PythonParser.js":2}],29:[function(require,module,exports){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -16124,7 +26572,7 @@ void JSupdate(uint32_t time, uint32_t updateCount) {
 `;
 exports.blit = blit;
 
-},{}],28:[function(require,module,exports){
+},{}],30:[function(require,module,exports){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -16169,7 +26617,7 @@ void JSupdate(uint32_t time, uint32_t updateCount) {
 `;
 exports.espboy = espboy;
 
-},{}],29:[function(require,module,exports){
+},{}],31:[function(require,module,exports){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -16222,7 +26670,7 @@ void JSupdate(uint32_t time, uint32_t updateCount) {
 `;
 exports.galuni = galuni;
 
-},{}],30:[function(require,module,exports){
+},{}],32:[function(require,module,exports){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -16268,7 +26716,7 @@ void JSupdate(uint32_t time, uint32_t updateCount) {
 `;
 exports.meta = meta;
 
-},{}],31:[function(require,module,exports){
+},{}],33:[function(require,module,exports){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -16321,7 +26769,7 @@ void JSupdate(uint32_t time, uint32_t updateCount) {
 `;
 exports.pico = pico;
 
-},{}],32:[function(require,module,exports){
+},{}],34:[function(require,module,exports){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -16366,7 +26814,7 @@ void JSupdate() {
 `;
 exports.pokitto = pokitto;
 
-},{}],33:[function(require,module,exports){
+},{}],35:[function(require,module,exports){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -16393,7 +26841,7 @@ int main() {
 }`;
 exports.std = std;
 
-},{}],34:[function(require,module,exports){
+},{}],36:[function(require,module,exports){
 const {Flasher} = require('./Flasher.js');
 
 async function getport() {
@@ -16447,7 +26895,7 @@ module.exports.upload = async function(binary, name = "micojs") {
     await flasher.upload();
 }
 
-},{"./Flasher.js":39}],35:[function(require,module,exports){
+},{"./Flasher.js":41}],37:[function(require,module,exports){
 const {JSC} = require('../JSC/jsc.js');
 
 function buildHTML(code, [width, height]) {
@@ -16474,7 +26922,7 @@ image-rendering: pixelated;
 }
 </style>
 <script src="assets.js?nc=8"></script>
-<script src="browser.js?nc=8"></script>
+<script src="browser.js?nc=9"></script>
 <script>
 ${code}
 </script>
@@ -16498,7 +26946,7 @@ async function build(fs, size) {
 
 module.exports.build = build;
 
-},{"../JSC/jsc.js":6}],36:[function(require,module,exports){
+},{"../JSC/jsc.js":7}],38:[function(require,module,exports){
 const {dom} = require('./dom.js');
 
 class Console {
@@ -16591,7 +27039,7 @@ class Console {
 
 module.exports.Console = Console;
 
-},{"./dom.js":58}],37:[function(require,module,exports){
+},{"./dom.js":61}],39:[function(require,module,exports){
 const esptool = require('./esptool.js');
 const {Flasher} = require('./Flasher.js');
 
@@ -16655,7 +27103,7 @@ module.exports.upload = async function(binary, name = "micojs") {
     await flasher.upload();
 }
 
-},{"./Flasher.js":39,"./esptool.js":59}],38:[function(require,module,exports){
+},{"./Flasher.js":41,"./esptool.js":62}],40:[function(require,module,exports){
 const JSZip = require('jszip');
 const {saveAs} = require('file-saver');
 
@@ -17557,7 +28005,7 @@ function getMimeType(ext) {
     }[ext.toLowerCase().trim()] || "application/octet-stream");
 }
 
-},{"file-saver":69,"jszip":75}],39:[function(require,module,exports){
+},{"file-saver":72,"jszip":78}],41:[function(require,module,exports){
 const {dom, index} = require('./dom.js');
 
 function save(name, data) {
@@ -17653,7 +28101,7 @@ class Flasher {
 
 module.exports.Flasher = Flasher;
 
-},{"./dom.js":58}],40:[function(require,module,exports){
+},{"./dom.js":61}],42:[function(require,module,exports){
 "use strict";
 
 const {
@@ -17700,6 +28148,9 @@ const {
 const {
   TileMapEditor
 } = require('./TileMapEditor.js');
+const {
+  URLEditor
+} = require('./URLEditor.js');
 // const {MusicEditor} = require('./MusicEditor.js');
 const {
   FS2Zip,
@@ -17810,6 +28261,8 @@ class IDE {
     return false;
   }
   setupConsoleContainer(el) {
+    const help = el.firstElementChild;
+    help.remove();
     const cc = new TabContainer(el);
     this.#consoleContainer = cc;
     const logcon = new Console('log');
@@ -17820,6 +28273,7 @@ class IDE {
     buildcon.onAppend = _ => cc.activate('compilation');
     buildcon.maxLines = 1;
     cc.add('compilation', buildcon.el);
+    cc.add('help', help);
     return false;
   }
   setupTabContainer(el) {
@@ -17947,6 +28401,9 @@ class IDE {
     },
     meta: "js",
     json: "js",
+    "https:"(parentElement, path) {
+      return new URLEditor(parentElement, path);
+    },
     raw(parentElement, path, contents) {},
     tmj(parentElement, path, contents) {
       return new TileMapEditor(parentElement, path, contents, this.#fs);
@@ -17964,18 +28421,24 @@ class IDE {
   };
 
   openFile(path) {
-    const shortPath = path.split('/').pop();
+    const pathParts = path.split('/');
+    const shortPath = pathParts.pop();
     if (this.#tabContainer.activate(shortPath)) {
       this.#projectModel.set('activeFile', path);
       return;
     }
     let contents = false;
-    try {
-      contents = this.#fs.readFile(path);
-    } catch (ex) {
-      console.warn(ex);
+    let factory = (shortPath.match(/\.([^./]+)$/i)?.[1] + '').toLowerCase();
+    if (pathParts?.[0]?.toLowerCase() === "https:") {
+      factory = "https:";
+    } else {
+      try {
+        contents = this.#fs.readFile(path);
+      } catch (ex) {
+        console.warn(ex);
+      }
+      if (contents === false) return;
     }
-    if (contents === false) return;
     let editorNode = dom('div', {
       style: {
         width: "100%",
@@ -17995,7 +28458,6 @@ class IDE {
     this.#projectModel.dirty('openFileList');
     this.#tabContainer.add(shortPath, editorNode);
     this.#tabContainer.activate(shortPath);
-    let factory = (shortPath.match(/\.([^./]+)$/i)?.[1] + '').toLowerCase();
     while (typeof factory == 'string') factory = this.editorFactories[factory];
     if (!factory) factory = this.editorFactories.raw;
     entry.editor = factory.call(this, editorNode, path, contents);
@@ -18231,7 +28693,7 @@ class ${fileName} {
 }
 module.exports.IDE = IDE;
 
-},{"./Blit.js":34,"./Browser.js":35,"./Console.js":36,"./ESPBoy.js":37,"./FS2Zip.js":38,"./ImageEditor.js":41,"./Model.js":42,"./PreBuild.js":43,"./Preview.js":44,"./ProjectControls.js":45,"./SAMD.js":47,"./TabContainer.js":52,"./TileMapEditor.js":53,"./TreeListNode.js":54,"./dom.js":58,"./example.js":60,"./pngfs.js":79,"./stdlib.js":81}],41:[function(require,module,exports){
+},{"./Blit.js":36,"./Browser.js":37,"./Console.js":38,"./ESPBoy.js":39,"./FS2Zip.js":40,"./ImageEditor.js":43,"./Model.js":44,"./PreBuild.js":45,"./Preview.js":46,"./ProjectControls.js":47,"./SAMD.js":49,"./TabContainer.js":54,"./TileMapEditor.js":55,"./TreeListNode.js":56,"./URLEditor.js":57,"./dom.js":61,"./example.js":63,"./pngfs.js":82,"./stdlib.js":84}],43:[function(require,module,exports){
 const {dom, index} = require('./dom.js');
 const {convertToU8, palette} = require('./PreBuild.js');
 
@@ -18682,7 +29144,7 @@ class ImageEditor {
 
 module.exports.ImageEditor = ImageEditor;
 
-},{"./PreBuild.js":43,"./dom.js":58}],42:[function(require,module,exports){
+},{"./PreBuild.js":45,"./dom.js":61}],44:[function(require,module,exports){
 const localforage = require('localforage');
 
 localforage.config({name:"model"});
@@ -18867,7 +29329,7 @@ class Model {
 
 module.exports.Model = Model;
 
-},{"localforage":76}],43:[function(require,module,exports){
+},{"localforage":79}],45:[function(require,module,exports){
 const {PNGFS} = require('./pngfs.js');
 const {dom} = require('./dom.js');
 
@@ -19644,7 +30106,7 @@ module.exports.PreBuild = prebuild;
 module.exports.palette = palette;
 module.exports.convertToU8 = convertToU8;
 
-},{"./dom.js":58,"./pngfs.js":79}],44:[function(require,module,exports){
+},{"./dom.js":61,"./pngfs.js":82}],46:[function(require,module,exports){
 "use strict";
 
 const {
@@ -19718,7 +30180,7 @@ class Preview {
 }
 module.exports.Preview = Preview;
 
-},{"./dom.js":58}],45:[function(require,module,exports){
+},{"./dom.js":61}],47:[function(require,module,exports){
 const {dom, index} = require('./dom.js');
 
 class ProjectControls {
@@ -19736,7 +30198,7 @@ class ProjectControls {
 
 module.exports.ProjectControls = ProjectControls;
 
-},{"./dom.js":58}],46:[function(require,module,exports){
+},{"./dom.js":61}],48:[function(require,module,exports){
 "use strict";
 
 var _app = require("firebase/app");
@@ -19785,7 +30247,7 @@ class Remote {
 }
 module.exports.Remote = Remote;
 
-},{"firebase/app":70,"firebase/database":71}],47:[function(require,module,exports){
+},{"firebase/app":73,"firebase/database":74}],49:[function(require,module,exports){
 const base = require('./Flasher.js');
 const {SamBA} = require('./samba.js');
 const {Device} = require('./device.js');
@@ -20212,7 +30674,7 @@ module.exports.upload = async function(offset, binary, name = "micojs") {
         throw msg;
 };
 
-},{"./Flasher.js":39,"./SAMDFlash.js":50,"./Uint8Buffer.js":55,"./device.js":57,"./samba.js":80}],48:[function(require,module,exports){
+},{"./Flasher.js":41,"./SAMDFlash.js":52,"./Uint8Buffer.js":58,"./device.js":60,"./samba.js":83}],50:[function(require,module,exports){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -20470,7 +30932,7 @@ class D2xNvmFlash extends Flash {
 }
 exports.D2xNvmFlash = D2xNvmFlash;
 
-},{"./SAMDFlash.js":50,"./samba.js":80}],49:[function(require,module,exports){
+},{"./SAMDFlash.js":52,"./samba.js":83}],51:[function(require,module,exports){
 
 const { Flash } = require('./SAMDFlash.js');
 const { SamBA } = require('./samba.js');
@@ -20815,7 +31277,7 @@ class D5xNvmFlash extends Flash {
 }
 module.exports.D5xNvmFlash = D5xNvmFlash;
 
-},{"./SAMDFlash.js":50,"./samba.js":80}],50:[function(require,module,exports){
+},{"./SAMDFlash.js":52,"./samba.js":83}],52:[function(require,module,exports){
 
 const { WordCopyApplet } = require('./wordcopyapplet.js');
 const { SamBA } = require('./samba.js');
@@ -21044,7 +31506,7 @@ class Flash {
 
 module.exports.Flash = Flash;
 
-},{"./samba.js":80,"./wordcopyapplet.js":82}],51:[function(require,module,exports){
+},{"./samba.js":83,"./wordcopyapplet.js":85}],53:[function(require,module,exports){
 const {dom, index} = require('./dom.js');
 const {Model} = require('./Model.js');
 
@@ -21164,7 +31626,7 @@ class TOP {
 
 module.exports.TOP = TOP;
 
-},{"./Model.js":42,"./dom.js":58}],52:[function(require,module,exports){
+},{"./Model.js":44,"./dom.js":61}],54:[function(require,module,exports){
 const {dom} = require('./dom.js');
 
 class TabContainer {
@@ -21262,7 +31724,7 @@ class TabContainer {
 
 module.exports.TabContainer = TabContainer;
 
-},{"./dom.js":58}],53:[function(require,module,exports){
+},{"./dom.js":61}],55:[function(require,module,exports){
 const {dom, index} = require('./dom.js');
 const {convertToU8, palette} = require('./PreBuild.js');
 
@@ -21644,7 +32106,7 @@ class TileMapEditor {
 
 module.exports.TileMapEditor = TileMapEditor;
 
-},{"./PreBuild.js":43,"./dom.js":58}],54:[function(require,module,exports){
+},{"./PreBuild.js":45,"./dom.js":61}],56:[function(require,module,exports){
 const {dom} = require('./dom.js');
 
 class TreeListNode {
@@ -21695,7 +32157,24 @@ class TreeListNode {
 
 module.exports.TreeListNode = TreeListNode;
 
-},{"./dom.js":58}],55:[function(require,module,exports){
+},{"./dom.js":61}],57:[function(require,module,exports){
+const {dom, index} = require('./dom.js');
+
+class URLEditor {
+    #dom;
+    path;
+
+    constructor(parentElement, path) {
+        this.path = path;
+        this.#dom = index(dom('iframe', parentElement, {className:'urlEditor', src:path}), {}, this);
+    }
+
+    commit(){}
+};
+
+module.exports.URLEditor = URLEditor;
+
+},{"./dom.js":61}],58:[function(require,module,exports){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -21791,7 +32270,7 @@ function toHex(value, size = 2) {
   return "0x" + (value >>> 0).toString(16).toUpperCase().padStart(size, "0");
 }
 
-},{}],56:[function(require,module,exports){
+},{}],59:[function(require,module,exports){
 "use strict";
 
 var _samba = require("./samba.js");
@@ -21861,7 +32340,7 @@ class Applet {
 }
 module.exports.Applet = Applet;
 
-},{"./samba.js":80}],57:[function(require,module,exports){
+},{"./samba.js":83}],60:[function(require,module,exports){
 
 const { SamBA } = require("./samba.js");
 const { D2xNvmFlash } = require('./SAMD2x.js');
@@ -22634,7 +33113,7 @@ class Device {
 }
 module.exports.Device = Device;
 
-},{"./SAMD2x.js":48,"./SAMD5x.js":49,"./SAMDFlash.js":50,"./samba.js":80}],58:[function(require,module,exports){
+},{"./SAMD2x.js":50,"./SAMD5x.js":51,"./SAMDFlash.js":52,"./samba.js":83}],61:[function(require,module,exports){
 function dom(...args) {
     let tag = "div";
     let parent = null;
@@ -22748,7 +33227,7 @@ function index(el, map = {}, bind = null) {
 module.exports.dom = dom;
 module.exports.index = index;
 
-},{}],59:[function(require,module,exports){
+},{}],62:[function(require,module,exports){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -24828,7 +35307,7 @@ const ga = async t => {
 };
 exports.connect = ga;
 
-},{}],60:[function(require,module,exports){
+},{}],63:[function(require,module,exports){
 module.exports.loadExample = function loadExample(fs) {
     fs.mkdir('/images');
 
@@ -24911,7 +35390,7 @@ function render() {
 `);
 };
 
-},{}],61:[function(require,module,exports){
+},{}],64:[function(require,module,exports){
 const {dom, index} = require('./dom.js');
 
 const {Model} = require('./Model.js');
@@ -24981,7 +35460,7 @@ class Main {
 window.main = new Main();
 
 
-},{"./IDE.js":40,"./Model.js":42,"./Remote.js":46,"./TOP.js":51,"./dom.js":58}],62:[function(require,module,exports){
+},{"./IDE.js":42,"./Model.js":44,"./Remote.js":48,"./TOP.js":53,"./dom.js":61}],65:[function(require,module,exports){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -25916,7 +36395,7 @@ function registerCoreComponents(variant) {
  */
 registerCoreComponents('');
 
-},{"@firebase/component":63,"@firebase/logger":65,"@firebase/util":66,"idb":72}],63:[function(require,module,exports){
+},{"@firebase/component":66,"@firebase/logger":68,"@firebase/util":69,"idb":75}],66:[function(require,module,exports){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -26322,7 +36801,7 @@ class ComponentContainer {
 }
 exports.ComponentContainer = ComponentContainer;
 
-},{"@firebase/util":66}],64:[function(require,module,exports){
+},{"@firebase/util":69}],67:[function(require,module,exports){
 (function (process){(function (){
 "use strict";Object.defineProperty(exports,"__esModule",{value:true});exports._TEST_ACCESS_hijackHash=exports._TEST_ACCESS_forceRestClient=exports._ReferenceImpl=exports._QueryParams=exports._QueryImpl=exports.TransactionResult=exports.QueryConstraint=exports.OnDisconnect=exports.Database=exports.DataSnapshot=void 0;exports._repoManagerDatabaseFromApp=repoManagerDatabaseFromApp;exports._setSDKVersion=setSDKVersion;exports._validateWritablePath=exports._validatePathString=void 0;exports.child=child;exports.connectDatabaseEmulator=connectDatabaseEmulator;exports.enableLogging=enableLogging;exports.endAt=endAt;exports.endBefore=endBefore;exports.equalTo=equalTo;exports.forceLongPolling=forceLongPolling;exports.forceWebSockets=forceWebSockets;exports.get=get;exports.getDatabase=getDatabase;exports.goOffline=goOffline;exports.goOnline=goOnline;exports.increment=increment;exports.limitToFirst=limitToFirst;exports.limitToLast=limitToLast;exports.off=off;exports.onChildAdded=onChildAdded;exports.onChildChanged=onChildChanged;exports.onChildMoved=onChildMoved;exports.onChildRemoved=onChildRemoved;exports.onDisconnect=onDisconnect;exports.onValue=onValue;exports.orderByChild=orderByChild;exports.orderByKey=orderByKey;exports.orderByPriority=orderByPriority;exports.orderByValue=orderByValue;exports.push=push;exports.query=query;exports.ref=ref;exports.refFromURL=refFromURL;exports.remove=remove;exports.runTransaction=runTransaction;exports.serverTimestamp=serverTimestamp;exports.set=set;exports.setPriority=setPriority;exports.setWithPriority=setWithPriority;exports.startAfter=startAfter;exports.startAt=startAt;exports.update=update;var _app=require("@firebase/app");var _component=require("@firebase/component");var _util=require("@firebase/util");var _logger=require("@firebase/logger");const name="@firebase/database";const version="0.13.10";/**
  * @license
@@ -30302,7 +40781,7 @@ Connection;/**
  */exports._TEST_ACCESS_forceRestClient=forceRestClient;registerDatabase();
 
 }).call(this)}).call(this,require('_process'))
-},{"@firebase/app":62,"@firebase/component":63,"@firebase/logger":65,"@firebase/util":66,"_process":77}],65:[function(require,module,exports){
+},{"@firebase/app":65,"@firebase/component":66,"@firebase/logger":68,"@firebase/util":69,"_process":80}],68:[function(require,module,exports){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -30519,7 +40998,7 @@ function setUserLogHandler(logCallback, options) {
   }
 }
 
-},{}],66:[function(require,module,exports){
+},{}],69:[function(require,module,exports){
 (function (process,global){(function (){
 "use strict";
 
@@ -32596,7 +43075,7 @@ function getModularInstance(service) {
 }
 
 }).call(this)}).call(this,require('_process'),typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"_process":77}],67:[function(require,module,exports){
+},{"_process":80}],70:[function(require,module,exports){
 'use strict'
 
 exports.byteLength = byteLength
@@ -32748,7 +43227,7 @@ function fromByteArray (uint8) {
   return parts.join('')
 }
 
-},{}],68:[function(require,module,exports){
+},{}],71:[function(require,module,exports){
 (function (Buffer){(function (){
 /*!
  * The buffer module from node.js, for the browser.
@@ -34529,13 +45008,13 @@ function numberIsNaN (obj) {
 }
 
 }).call(this)}).call(this,require("buffer").Buffer)
-},{"base64-js":67,"buffer":68,"ieee754":74}],69:[function(require,module,exports){
+},{"base64-js":70,"buffer":71,"ieee754":77}],72:[function(require,module,exports){
 (function (global){(function (){
 (function(a,b){if("function"==typeof define&&define.amd)define([],b);else if("undefined"!=typeof exports)b();else{b(),a.FileSaver={exports:{}}.exports}})(this,function(){"use strict";function b(a,b){return"undefined"==typeof b?b={autoBom:!1}:"object"!=typeof b&&(console.warn("Deprecated: Expected third argument to be a object"),b={autoBom:!b}),b.autoBom&&/^\s*(?:text\/\S*|application\/xml|\S*\/\S*\+xml)\s*;.*charset\s*=\s*utf-8/i.test(a.type)?new Blob(["\uFEFF",a],{type:a.type}):a}function c(a,b,c){var d=new XMLHttpRequest;d.open("GET",a),d.responseType="blob",d.onload=function(){g(d.response,b,c)},d.onerror=function(){console.error("could not download file")},d.send()}function d(a){var b=new XMLHttpRequest;b.open("HEAD",a,!1);try{b.send()}catch(a){}return 200<=b.status&&299>=b.status}function e(a){try{a.dispatchEvent(new MouseEvent("click"))}catch(c){var b=document.createEvent("MouseEvents");b.initMouseEvent("click",!0,!0,window,0,0,0,80,20,!1,!1,!1,!1,0,null),a.dispatchEvent(b)}}var f="object"==typeof window&&window.window===window?window:"object"==typeof self&&self.self===self?self:"object"==typeof global&&global.global===global?global:void 0,a=f.navigator&&/Macintosh/.test(navigator.userAgent)&&/AppleWebKit/.test(navigator.userAgent)&&!/Safari/.test(navigator.userAgent),g=f.saveAs||("object"!=typeof window||window!==f?function(){}:"download"in HTMLAnchorElement.prototype&&!a?function(b,g,h){var i=f.URL||f.webkitURL,j=document.createElement("a");g=g||b.name||"download",j.download=g,j.rel="noopener","string"==typeof b?(j.href=b,j.origin===location.origin?e(j):d(j.href)?c(b,g,h):e(j,j.target="_blank")):(j.href=i.createObjectURL(b),setTimeout(function(){i.revokeObjectURL(j.href)},4E4),setTimeout(function(){e(j)},0))}:"msSaveOrOpenBlob"in navigator?function(f,g,h){if(g=g||f.name||"download","string"!=typeof f)navigator.msSaveOrOpenBlob(b(f,h),g);else if(d(f))c(f,g,h);else{var i=document.createElement("a");i.href=f,i.target="_blank",setTimeout(function(){e(i)})}}:function(b,d,e,g){if(g=g||open("","_blank"),g&&(g.document.title=g.document.body.innerText="downloading..."),"string"==typeof b)return c(b,d,e);var h="application/octet-stream"===b.type,i=/constructor/i.test(f.HTMLElement)||f.safari,j=/CriOS\/[\d]+/.test(navigator.userAgent);if((j||h&&i||a)&&"undefined"!=typeof FileReader){var k=new FileReader;k.onloadend=function(){var a=k.result;a=j?a:a.replace(/^data:[^;]*;/,"data:attachment/file;"),g?g.location.href=a:location=a,g=null},k.readAsDataURL(b)}else{var l=f.URL||f.webkitURL,m=l.createObjectURL(b);g?g.location=m:location.href=m,g=null,setTimeout(function(){l.revokeObjectURL(m)},4E4)}});f.saveAs=g.saveAs=g,"undefined"!=typeof module&&(module.exports=g)});
 
 
 }).call(this)}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],70:[function(require,module,exports){
+},{}],73:[function(require,module,exports){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -34573,7 +45052,7 @@ var version = "9.14.0";
  */
 (0, _app.registerVersion)(name, version, 'app');
 
-},{"@firebase/app":62}],71:[function(require,module,exports){
+},{"@firebase/app":65}],74:[function(require,module,exports){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -34591,7 +45070,7 @@ Object.keys(_database).forEach(function (key) {
   });
 });
 
-},{"@firebase/database":64}],72:[function(require,module,exports){
+},{"@firebase/database":67}],75:[function(require,module,exports){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -34688,7 +45167,7 @@ function getMethod(target, prop) {
   has: (target, prop) => !!getMethod(target, prop) || oldTraps.has(target, prop)
 }));
 
-},{"./wrap-idb-value.js":73}],73:[function(require,module,exports){
+},{"./wrap-idb-value.js":76}],76:[function(require,module,exports){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -34859,7 +45338,7 @@ function wrap(value) {
 const unwrap = value => reverseTransformCache.get(value);
 exports.u = unwrap;
 
-},{}],74:[function(require,module,exports){
+},{}],77:[function(require,module,exports){
 /*! ieee754. BSD-3-Clause License. Feross Aboukhadijeh <https://feross.org/opensource> */
 exports.read = function (buffer, offset, isLE, mLen, nBytes) {
   var e, m
@@ -34946,7 +45425,7 @@ exports.write = function (buffer, value, offset, isLE, mLen, nBytes) {
   buffer[offset + i - d] |= s * 128
 }
 
-},{}],75:[function(require,module,exports){
+},{}],78:[function(require,module,exports){
 (function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,setImmediate){(function (){
 /*!
 
@@ -34962,7 +45441,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
 
 !function(e){if("object"==typeof exports&&"undefined"!=typeof module)module.exports=e();else if("function"==typeof define&&define.amd)define([],e);else{("undefined"!=typeof window?window:"undefined"!=typeof global?global:"undefined"!=typeof self?self:this).JSZip=e()}}(function(){return function s(a,o,h){function u(r,e){if(!o[r]){if(!a[r]){var t="function"==typeof require&&require;if(!e&&t)return t(r,!0);if(l)return l(r,!0);var n=new Error("Cannot find module '"+r+"'");throw n.code="MODULE_NOT_FOUND",n}var i=o[r]={exports:{}};a[r][0].call(i.exports,function(e){var t=a[r][1][e];return u(t||e)},i,i.exports,s,a,o,h)}return o[r].exports}for(var l="function"==typeof require&&require,e=0;e<h.length;e++)u(h[e]);return u}({1:[function(e,t,r){"use strict";var d=e("./utils"),c=e("./support"),p="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";r.encode=function(e){for(var t,r,n,i,s,a,o,h=[],u=0,l=e.length,f=l,c="string"!==d.getTypeOf(e);u<e.length;)f=l-u,n=c?(t=e[u++],r=u<l?e[u++]:0,u<l?e[u++]:0):(t=e.charCodeAt(u++),r=u<l?e.charCodeAt(u++):0,u<l?e.charCodeAt(u++):0),i=t>>2,s=(3&t)<<4|r>>4,a=1<f?(15&r)<<2|n>>6:64,o=2<f?63&n:64,h.push(p.charAt(i)+p.charAt(s)+p.charAt(a)+p.charAt(o));return h.join("")},r.decode=function(e){var t,r,n,i,s,a,o=0,h=0,u="data:";if(e.substr(0,u.length)===u)throw new Error("Invalid base64 input, it looks like a data url.");var l,f=3*(e=e.replace(/[^A-Za-z0-9+/=]/g,"")).length/4;if(e.charAt(e.length-1)===p.charAt(64)&&f--,e.charAt(e.length-2)===p.charAt(64)&&f--,f%1!=0)throw new Error("Invalid base64 input, bad content length.");for(l=c.uint8array?new Uint8Array(0|f):new Array(0|f);o<e.length;)t=p.indexOf(e.charAt(o++))<<2|(i=p.indexOf(e.charAt(o++)))>>4,r=(15&i)<<4|(s=p.indexOf(e.charAt(o++)))>>2,n=(3&s)<<6|(a=p.indexOf(e.charAt(o++))),l[h++]=t,64!==s&&(l[h++]=r),64!==a&&(l[h++]=n);return l}},{"./support":30,"./utils":32}],2:[function(e,t,r){"use strict";var n=e("./external"),i=e("./stream/DataWorker"),s=e("./stream/Crc32Probe"),a=e("./stream/DataLengthProbe");function o(e,t,r,n,i){this.compressedSize=e,this.uncompressedSize=t,this.crc32=r,this.compression=n,this.compressedContent=i}o.prototype={getContentWorker:function(){var e=new i(n.Promise.resolve(this.compressedContent)).pipe(this.compression.uncompressWorker()).pipe(new a("data_length")),t=this;return e.on("end",function(){if(this.streamInfo.data_length!==t.uncompressedSize)throw new Error("Bug : uncompressed data size mismatch")}),e},getCompressedWorker:function(){return new i(n.Promise.resolve(this.compressedContent)).withStreamInfo("compressedSize",this.compressedSize).withStreamInfo("uncompressedSize",this.uncompressedSize).withStreamInfo("crc32",this.crc32).withStreamInfo("compression",this.compression)}},o.createWorkerFrom=function(e,t,r){return e.pipe(new s).pipe(new a("uncompressedSize")).pipe(t.compressWorker(r)).pipe(new a("compressedSize")).withStreamInfo("compression",t)},t.exports=o},{"./external":6,"./stream/Crc32Probe":25,"./stream/DataLengthProbe":26,"./stream/DataWorker":27}],3:[function(e,t,r){"use strict";var n=e("./stream/GenericWorker");r.STORE={magic:"\0\0",compressWorker:function(){return new n("STORE compression")},uncompressWorker:function(){return new n("STORE decompression")}},r.DEFLATE=e("./flate")},{"./flate":7,"./stream/GenericWorker":28}],4:[function(e,t,r){"use strict";var n=e("./utils");var o=function(){for(var e,t=[],r=0;r<256;r++){e=r;for(var n=0;n<8;n++)e=1&e?3988292384^e>>>1:e>>>1;t[r]=e}return t}();t.exports=function(e,t){return void 0!==e&&e.length?"string"!==n.getTypeOf(e)?function(e,t,r,n){var i=o,s=n+r;e^=-1;for(var a=n;a<s;a++)e=e>>>8^i[255&(e^t[a])];return-1^e}(0|t,e,e.length,0):function(e,t,r,n){var i=o,s=n+r;e^=-1;for(var a=n;a<s;a++)e=e>>>8^i[255&(e^t.charCodeAt(a))];return-1^e}(0|t,e,e.length,0):0}},{"./utils":32}],5:[function(e,t,r){"use strict";r.base64=!1,r.binary=!1,r.dir=!1,r.createFolders=!0,r.date=null,r.compression=null,r.compressionOptions=null,r.comment=null,r.unixPermissions=null,r.dosPermissions=null},{}],6:[function(e,t,r){"use strict";var n=null;n="undefined"!=typeof Promise?Promise:e("lie"),t.exports={Promise:n}},{lie:37}],7:[function(e,t,r){"use strict";var n="undefined"!=typeof Uint8Array&&"undefined"!=typeof Uint16Array&&"undefined"!=typeof Uint32Array,i=e("pako"),s=e("./utils"),a=e("./stream/GenericWorker"),o=n?"uint8array":"array";function h(e,t){a.call(this,"FlateWorker/"+e),this._pako=null,this._pakoAction=e,this._pakoOptions=t,this.meta={}}r.magic="\b\0",s.inherits(h,a),h.prototype.processChunk=function(e){this.meta=e.meta,null===this._pako&&this._createPako(),this._pako.push(s.transformTo(o,e.data),!1)},h.prototype.flush=function(){a.prototype.flush.call(this),null===this._pako&&this._createPako(),this._pako.push([],!0)},h.prototype.cleanUp=function(){a.prototype.cleanUp.call(this),this._pako=null},h.prototype._createPako=function(){this._pako=new i[this._pakoAction]({raw:!0,level:this._pakoOptions.level||-1});var t=this;this._pako.onData=function(e){t.push({data:e,meta:t.meta})}},r.compressWorker=function(e){return new h("Deflate",e)},r.uncompressWorker=function(){return new h("Inflate",{})}},{"./stream/GenericWorker":28,"./utils":32,pako:38}],8:[function(e,t,r){"use strict";function A(e,t){var r,n="";for(r=0;r<t;r++)n+=String.fromCharCode(255&e),e>>>=8;return n}function n(e,t,r,n,i,s){var a,o,h=e.file,u=e.compression,l=s!==O.utf8encode,f=I.transformTo("string",s(h.name)),c=I.transformTo("string",O.utf8encode(h.name)),d=h.comment,p=I.transformTo("string",s(d)),m=I.transformTo("string",O.utf8encode(d)),_=c.length!==h.name.length,g=m.length!==d.length,b="",v="",y="",w=h.dir,k=h.date,x={crc32:0,compressedSize:0,uncompressedSize:0};t&&!r||(x.crc32=e.crc32,x.compressedSize=e.compressedSize,x.uncompressedSize=e.uncompressedSize);var S=0;t&&(S|=8),l||!_&&!g||(S|=2048);var z=0,C=0;w&&(z|=16),"UNIX"===i?(C=798,z|=function(e,t){var r=e;return e||(r=t?16893:33204),(65535&r)<<16}(h.unixPermissions,w)):(C=20,z|=function(e){return 63&(e||0)}(h.dosPermissions)),a=k.getUTCHours(),a<<=6,a|=k.getUTCMinutes(),a<<=5,a|=k.getUTCSeconds()/2,o=k.getUTCFullYear()-1980,o<<=4,o|=k.getUTCMonth()+1,o<<=5,o|=k.getUTCDate(),_&&(v=A(1,1)+A(B(f),4)+c,b+="up"+A(v.length,2)+v),g&&(y=A(1,1)+A(B(p),4)+m,b+="uc"+A(y.length,2)+y);var E="";return E+="\n\0",E+=A(S,2),E+=u.magic,E+=A(a,2),E+=A(o,2),E+=A(x.crc32,4),E+=A(x.compressedSize,4),E+=A(x.uncompressedSize,4),E+=A(f.length,2),E+=A(b.length,2),{fileRecord:R.LOCAL_FILE_HEADER+E+f+b,dirRecord:R.CENTRAL_FILE_HEADER+A(C,2)+E+A(p.length,2)+"\0\0\0\0"+A(z,4)+A(n,4)+f+b+p}}var I=e("../utils"),i=e("../stream/GenericWorker"),O=e("../utf8"),B=e("../crc32"),R=e("../signature");function s(e,t,r,n){i.call(this,"ZipFileWorker"),this.bytesWritten=0,this.zipComment=t,this.zipPlatform=r,this.encodeFileName=n,this.streamFiles=e,this.accumulate=!1,this.contentBuffer=[],this.dirRecords=[],this.currentSourceOffset=0,this.entriesCount=0,this.currentFile=null,this._sources=[]}I.inherits(s,i),s.prototype.push=function(e){var t=e.meta.percent||0,r=this.entriesCount,n=this._sources.length;this.accumulate?this.contentBuffer.push(e):(this.bytesWritten+=e.data.length,i.prototype.push.call(this,{data:e.data,meta:{currentFile:this.currentFile,percent:r?(t+100*(r-n-1))/r:100}}))},s.prototype.openedSource=function(e){this.currentSourceOffset=this.bytesWritten,this.currentFile=e.file.name;var t=this.streamFiles&&!e.file.dir;if(t){var r=n(e,t,!1,this.currentSourceOffset,this.zipPlatform,this.encodeFileName);this.push({data:r.fileRecord,meta:{percent:0}})}else this.accumulate=!0},s.prototype.closedSource=function(e){this.accumulate=!1;var t=this.streamFiles&&!e.file.dir,r=n(e,t,!0,this.currentSourceOffset,this.zipPlatform,this.encodeFileName);if(this.dirRecords.push(r.dirRecord),t)this.push({data:function(e){return R.DATA_DESCRIPTOR+A(e.crc32,4)+A(e.compressedSize,4)+A(e.uncompressedSize,4)}(e),meta:{percent:100}});else for(this.push({data:r.fileRecord,meta:{percent:0}});this.contentBuffer.length;)this.push(this.contentBuffer.shift());this.currentFile=null},s.prototype.flush=function(){for(var e=this.bytesWritten,t=0;t<this.dirRecords.length;t++)this.push({data:this.dirRecords[t],meta:{percent:100}});var r=this.bytesWritten-e,n=function(e,t,r,n,i){var s=I.transformTo("string",i(n));return R.CENTRAL_DIRECTORY_END+"\0\0\0\0"+A(e,2)+A(e,2)+A(t,4)+A(r,4)+A(s.length,2)+s}(this.dirRecords.length,r,e,this.zipComment,this.encodeFileName);this.push({data:n,meta:{percent:100}})},s.prototype.prepareNextSource=function(){this.previous=this._sources.shift(),this.openedSource(this.previous.streamInfo),this.isPaused?this.previous.pause():this.previous.resume()},s.prototype.registerPrevious=function(e){this._sources.push(e);var t=this;return e.on("data",function(e){t.processChunk(e)}),e.on("end",function(){t.closedSource(t.previous.streamInfo),t._sources.length?t.prepareNextSource():t.end()}),e.on("error",function(e){t.error(e)}),this},s.prototype.resume=function(){return!!i.prototype.resume.call(this)&&(!this.previous&&this._sources.length?(this.prepareNextSource(),!0):this.previous||this._sources.length||this.generatedError?void 0:(this.end(),!0))},s.prototype.error=function(e){var t=this._sources;if(!i.prototype.error.call(this,e))return!1;for(var r=0;r<t.length;r++)try{t[r].error(e)}catch(e){}return!0},s.prototype.lock=function(){i.prototype.lock.call(this);for(var e=this._sources,t=0;t<e.length;t++)e[t].lock()},t.exports=s},{"../crc32":4,"../signature":23,"../stream/GenericWorker":28,"../utf8":31,"../utils":32}],9:[function(e,t,r){"use strict";var u=e("../compressions"),n=e("./ZipFileWorker");r.generateWorker=function(e,a,t){var o=new n(a.streamFiles,t,a.platform,a.encodeFileName),h=0;try{e.forEach(function(e,t){h++;var r=function(e,t){var r=e||t,n=u[r];if(!n)throw new Error(r+" is not a valid compression method !");return n}(t.options.compression,a.compression),n=t.options.compressionOptions||a.compressionOptions||{},i=t.dir,s=t.date;t._compressWorker(r,n).withStreamInfo("file",{name:e,dir:i,date:s,comment:t.comment||"",unixPermissions:t.unixPermissions,dosPermissions:t.dosPermissions}).pipe(o)}),o.entriesCount=h}catch(e){o.error(e)}return o}},{"../compressions":3,"./ZipFileWorker":8}],10:[function(e,t,r){"use strict";function n(){if(!(this instanceof n))return new n;if(arguments.length)throw new Error("The constructor with parameters has been removed in JSZip 3.0, please check the upgrade guide.");this.files=Object.create(null),this.comment=null,this.root="",this.clone=function(){var e=new n;for(var t in this)"function"!=typeof this[t]&&(e[t]=this[t]);return e}}(n.prototype=e("./object")).loadAsync=e("./load"),n.support=e("./support"),n.defaults=e("./defaults"),n.version="3.10.1",n.loadAsync=function(e,t){return(new n).loadAsync(e,t)},n.external=e("./external"),t.exports=n},{"./defaults":5,"./external":6,"./load":11,"./object":15,"./support":30}],11:[function(e,t,r){"use strict";var u=e("./utils"),i=e("./external"),n=e("./utf8"),s=e("./zipEntries"),a=e("./stream/Crc32Probe"),l=e("./nodejsUtils");function f(n){return new i.Promise(function(e,t){var r=n.decompressed.getContentWorker().pipe(new a);r.on("error",function(e){t(e)}).on("end",function(){r.streamInfo.crc32!==n.decompressed.crc32?t(new Error("Corrupted zip : CRC32 mismatch")):e()}).resume()})}t.exports=function(e,o){var h=this;return o=u.extend(o||{},{base64:!1,checkCRC32:!1,optimizedBinaryString:!1,createFolders:!1,decodeFileName:n.utf8decode}),l.isNode&&l.isStream(e)?i.Promise.reject(new Error("JSZip can't accept a stream when loading a zip file.")):u.prepareContent("the loaded zip file",e,!0,o.optimizedBinaryString,o.base64).then(function(e){var t=new s(o);return t.load(e),t}).then(function(e){var t=[i.Promise.resolve(e)],r=e.files;if(o.checkCRC32)for(var n=0;n<r.length;n++)t.push(f(r[n]));return i.Promise.all(t)}).then(function(e){for(var t=e.shift(),r=t.files,n=0;n<r.length;n++){var i=r[n],s=i.fileNameStr,a=u.resolve(i.fileNameStr);h.file(a,i.decompressed,{binary:!0,optimizedBinaryString:!0,date:i.date,dir:i.dir,comment:i.fileCommentStr.length?i.fileCommentStr:null,unixPermissions:i.unixPermissions,dosPermissions:i.dosPermissions,createFolders:o.createFolders}),i.dir||(h.file(a).unsafeOriginalName=s)}return t.zipComment.length&&(h.comment=t.zipComment),h})}},{"./external":6,"./nodejsUtils":14,"./stream/Crc32Probe":25,"./utf8":31,"./utils":32,"./zipEntries":33}],12:[function(e,t,r){"use strict";var n=e("../utils"),i=e("../stream/GenericWorker");function s(e,t){i.call(this,"Nodejs stream input adapter for "+e),this._upstreamEnded=!1,this._bindStream(t)}n.inherits(s,i),s.prototype._bindStream=function(e){var t=this;(this._stream=e).pause(),e.on("data",function(e){t.push({data:e,meta:{percent:0}})}).on("error",function(e){t.isPaused?this.generatedError=e:t.error(e)}).on("end",function(){t.isPaused?t._upstreamEnded=!0:t.end()})},s.prototype.pause=function(){return!!i.prototype.pause.call(this)&&(this._stream.pause(),!0)},s.prototype.resume=function(){return!!i.prototype.resume.call(this)&&(this._upstreamEnded?this.end():this._stream.resume(),!0)},t.exports=s},{"../stream/GenericWorker":28,"../utils":32}],13:[function(e,t,r){"use strict";var i=e("readable-stream").Readable;function n(e,t,r){i.call(this,t),this._helper=e;var n=this;e.on("data",function(e,t){n.push(e)||n._helper.pause(),r&&r(t)}).on("error",function(e){n.emit("error",e)}).on("end",function(){n.push(null)})}e("../utils").inherits(n,i),n.prototype._read=function(){this._helper.resume()},t.exports=n},{"../utils":32,"readable-stream":16}],14:[function(e,t,r){"use strict";t.exports={isNode:"undefined"!=typeof Buffer,newBufferFrom:function(e,t){if(Buffer.from&&Buffer.from!==Uint8Array.from)return Buffer.from(e,t);if("number"==typeof e)throw new Error('The "data" argument must not be a number');return new Buffer(e,t)},allocBuffer:function(e){if(Buffer.alloc)return Buffer.alloc(e);var t=new Buffer(e);return t.fill(0),t},isBuffer:function(e){return Buffer.isBuffer(e)},isStream:function(e){return e&&"function"==typeof e.on&&"function"==typeof e.pause&&"function"==typeof e.resume}}},{}],15:[function(e,t,r){"use strict";function s(e,t,r){var n,i=u.getTypeOf(t),s=u.extend(r||{},f);s.date=s.date||new Date,null!==s.compression&&(s.compression=s.compression.toUpperCase()),"string"==typeof s.unixPermissions&&(s.unixPermissions=parseInt(s.unixPermissions,8)),s.unixPermissions&&16384&s.unixPermissions&&(s.dir=!0),s.dosPermissions&&16&s.dosPermissions&&(s.dir=!0),s.dir&&(e=g(e)),s.createFolders&&(n=_(e))&&b.call(this,n,!0);var a="string"===i&&!1===s.binary&&!1===s.base64;r&&void 0!==r.binary||(s.binary=!a),(t instanceof c&&0===t.uncompressedSize||s.dir||!t||0===t.length)&&(s.base64=!1,s.binary=!0,t="",s.compression="STORE",i="string");var o=null;o=t instanceof c||t instanceof l?t:p.isNode&&p.isStream(t)?new m(e,t):u.prepareContent(e,t,s.binary,s.optimizedBinaryString,s.base64);var h=new d(e,o,s);this.files[e]=h}var i=e("./utf8"),u=e("./utils"),l=e("./stream/GenericWorker"),a=e("./stream/StreamHelper"),f=e("./defaults"),c=e("./compressedObject"),d=e("./zipObject"),o=e("./generate"),p=e("./nodejsUtils"),m=e("./nodejs/NodejsStreamInputAdapter"),_=function(e){"/"===e.slice(-1)&&(e=e.substring(0,e.length-1));var t=e.lastIndexOf("/");return 0<t?e.substring(0,t):""},g=function(e){return"/"!==e.slice(-1)&&(e+="/"),e},b=function(e,t){return t=void 0!==t?t:f.createFolders,e=g(e),this.files[e]||s.call(this,e,null,{dir:!0,createFolders:t}),this.files[e]};function h(e){return"[object RegExp]"===Object.prototype.toString.call(e)}var n={load:function(){throw new Error("This method has been removed in JSZip 3.0, please check the upgrade guide.")},forEach:function(e){var t,r,n;for(t in this.files)n=this.files[t],(r=t.slice(this.root.length,t.length))&&t.slice(0,this.root.length)===this.root&&e(r,n)},filter:function(r){var n=[];return this.forEach(function(e,t){r(e,t)&&n.push(t)}),n},file:function(e,t,r){if(1!==arguments.length)return e=this.root+e,s.call(this,e,t,r),this;if(h(e)){var n=e;return this.filter(function(e,t){return!t.dir&&n.test(e)})}var i=this.files[this.root+e];return i&&!i.dir?i:null},folder:function(r){if(!r)return this;if(h(r))return this.filter(function(e,t){return t.dir&&r.test(e)});var e=this.root+r,t=b.call(this,e),n=this.clone();return n.root=t.name,n},remove:function(r){r=this.root+r;var e=this.files[r];if(e||("/"!==r.slice(-1)&&(r+="/"),e=this.files[r]),e&&!e.dir)delete this.files[r];else for(var t=this.filter(function(e,t){return t.name.slice(0,r.length)===r}),n=0;n<t.length;n++)delete this.files[t[n].name];return this},generate:function(){throw new Error("This method has been removed in JSZip 3.0, please check the upgrade guide.")},generateInternalStream:function(e){var t,r={};try{if((r=u.extend(e||{},{streamFiles:!1,compression:"STORE",compressionOptions:null,type:"",platform:"DOS",comment:null,mimeType:"application/zip",encodeFileName:i.utf8encode})).type=r.type.toLowerCase(),r.compression=r.compression.toUpperCase(),"binarystring"===r.type&&(r.type="string"),!r.type)throw new Error("No output type specified.");u.checkSupport(r.type),"darwin"!==r.platform&&"freebsd"!==r.platform&&"linux"!==r.platform&&"sunos"!==r.platform||(r.platform="UNIX"),"win32"===r.platform&&(r.platform="DOS");var n=r.comment||this.comment||"";t=o.generateWorker(this,r,n)}catch(e){(t=new l("error")).error(e)}return new a(t,r.type||"string",r.mimeType)},generateAsync:function(e,t){return this.generateInternalStream(e).accumulate(t)},generateNodeStream:function(e,t){return(e=e||{}).type||(e.type="nodebuffer"),this.generateInternalStream(e).toNodejsStream(t)}};t.exports=n},{"./compressedObject":2,"./defaults":5,"./generate":9,"./nodejs/NodejsStreamInputAdapter":12,"./nodejsUtils":14,"./stream/GenericWorker":28,"./stream/StreamHelper":29,"./utf8":31,"./utils":32,"./zipObject":35}],16:[function(e,t,r){"use strict";t.exports=e("stream")},{stream:void 0}],17:[function(e,t,r){"use strict";var n=e("./DataReader");function i(e){n.call(this,e);for(var t=0;t<this.data.length;t++)e[t]=255&e[t]}e("../utils").inherits(i,n),i.prototype.byteAt=function(e){return this.data[this.zero+e]},i.prototype.lastIndexOfSignature=function(e){for(var t=e.charCodeAt(0),r=e.charCodeAt(1),n=e.charCodeAt(2),i=e.charCodeAt(3),s=this.length-4;0<=s;--s)if(this.data[s]===t&&this.data[s+1]===r&&this.data[s+2]===n&&this.data[s+3]===i)return s-this.zero;return-1},i.prototype.readAndCheckSignature=function(e){var t=e.charCodeAt(0),r=e.charCodeAt(1),n=e.charCodeAt(2),i=e.charCodeAt(3),s=this.readData(4);return t===s[0]&&r===s[1]&&n===s[2]&&i===s[3]},i.prototype.readData=function(e){if(this.checkOffset(e),0===e)return[];var t=this.data.slice(this.zero+this.index,this.zero+this.index+e);return this.index+=e,t},t.exports=i},{"../utils":32,"./DataReader":18}],18:[function(e,t,r){"use strict";var n=e("../utils");function i(e){this.data=e,this.length=e.length,this.index=0,this.zero=0}i.prototype={checkOffset:function(e){this.checkIndex(this.index+e)},checkIndex:function(e){if(this.length<this.zero+e||e<0)throw new Error("End of data reached (data length = "+this.length+", asked index = "+e+"). Corrupted zip ?")},setIndex:function(e){this.checkIndex(e),this.index=e},skip:function(e){this.setIndex(this.index+e)},byteAt:function(){},readInt:function(e){var t,r=0;for(this.checkOffset(e),t=this.index+e-1;t>=this.index;t--)r=(r<<8)+this.byteAt(t);return this.index+=e,r},readString:function(e){return n.transformTo("string",this.readData(e))},readData:function(){},lastIndexOfSignature:function(){},readAndCheckSignature:function(){},readDate:function(){var e=this.readInt(4);return new Date(Date.UTC(1980+(e>>25&127),(e>>21&15)-1,e>>16&31,e>>11&31,e>>5&63,(31&e)<<1))}},t.exports=i},{"../utils":32}],19:[function(e,t,r){"use strict";var n=e("./Uint8ArrayReader");function i(e){n.call(this,e)}e("../utils").inherits(i,n),i.prototype.readData=function(e){this.checkOffset(e);var t=this.data.slice(this.zero+this.index,this.zero+this.index+e);return this.index+=e,t},t.exports=i},{"../utils":32,"./Uint8ArrayReader":21}],20:[function(e,t,r){"use strict";var n=e("./DataReader");function i(e){n.call(this,e)}e("../utils").inherits(i,n),i.prototype.byteAt=function(e){return this.data.charCodeAt(this.zero+e)},i.prototype.lastIndexOfSignature=function(e){return this.data.lastIndexOf(e)-this.zero},i.prototype.readAndCheckSignature=function(e){return e===this.readData(4)},i.prototype.readData=function(e){this.checkOffset(e);var t=this.data.slice(this.zero+this.index,this.zero+this.index+e);return this.index+=e,t},t.exports=i},{"../utils":32,"./DataReader":18}],21:[function(e,t,r){"use strict";var n=e("./ArrayReader");function i(e){n.call(this,e)}e("../utils").inherits(i,n),i.prototype.readData=function(e){if(this.checkOffset(e),0===e)return new Uint8Array(0);var t=this.data.subarray(this.zero+this.index,this.zero+this.index+e);return this.index+=e,t},t.exports=i},{"../utils":32,"./ArrayReader":17}],22:[function(e,t,r){"use strict";var n=e("../utils"),i=e("../support"),s=e("./ArrayReader"),a=e("./StringReader"),o=e("./NodeBufferReader"),h=e("./Uint8ArrayReader");t.exports=function(e){var t=n.getTypeOf(e);return n.checkSupport(t),"string"!==t||i.uint8array?"nodebuffer"===t?new o(e):i.uint8array?new h(n.transformTo("uint8array",e)):new s(n.transformTo("array",e)):new a(e)}},{"../support":30,"../utils":32,"./ArrayReader":17,"./NodeBufferReader":19,"./StringReader":20,"./Uint8ArrayReader":21}],23:[function(e,t,r){"use strict";r.LOCAL_FILE_HEADER="PK",r.CENTRAL_FILE_HEADER="PK",r.CENTRAL_DIRECTORY_END="PK",r.ZIP64_CENTRAL_DIRECTORY_LOCATOR="PK",r.ZIP64_CENTRAL_DIRECTORY_END="PK",r.DATA_DESCRIPTOR="PK\b"},{}],24:[function(e,t,r){"use strict";var n=e("./GenericWorker"),i=e("../utils");function s(e){n.call(this,"ConvertWorker to "+e),this.destType=e}i.inherits(s,n),s.prototype.processChunk=function(e){this.push({data:i.transformTo(this.destType,e.data),meta:e.meta})},t.exports=s},{"../utils":32,"./GenericWorker":28}],25:[function(e,t,r){"use strict";var n=e("./GenericWorker"),i=e("../crc32");function s(){n.call(this,"Crc32Probe"),this.withStreamInfo("crc32",0)}e("../utils").inherits(s,n),s.prototype.processChunk=function(e){this.streamInfo.crc32=i(e.data,this.streamInfo.crc32||0),this.push(e)},t.exports=s},{"../crc32":4,"../utils":32,"./GenericWorker":28}],26:[function(e,t,r){"use strict";var n=e("../utils"),i=e("./GenericWorker");function s(e){i.call(this,"DataLengthProbe for "+e),this.propName=e,this.withStreamInfo(e,0)}n.inherits(s,i),s.prototype.processChunk=function(e){if(e){var t=this.streamInfo[this.propName]||0;this.streamInfo[this.propName]=t+e.data.length}i.prototype.processChunk.call(this,e)},t.exports=s},{"../utils":32,"./GenericWorker":28}],27:[function(e,t,r){"use strict";var n=e("../utils"),i=e("./GenericWorker");function s(e){i.call(this,"DataWorker");var t=this;this.dataIsReady=!1,this.index=0,this.max=0,this.data=null,this.type="",this._tickScheduled=!1,e.then(function(e){t.dataIsReady=!0,t.data=e,t.max=e&&e.length||0,t.type=n.getTypeOf(e),t.isPaused||t._tickAndRepeat()},function(e){t.error(e)})}n.inherits(s,i),s.prototype.cleanUp=function(){i.prototype.cleanUp.call(this),this.data=null},s.prototype.resume=function(){return!!i.prototype.resume.call(this)&&(!this._tickScheduled&&this.dataIsReady&&(this._tickScheduled=!0,n.delay(this._tickAndRepeat,[],this)),!0)},s.prototype._tickAndRepeat=function(){this._tickScheduled=!1,this.isPaused||this.isFinished||(this._tick(),this.isFinished||(n.delay(this._tickAndRepeat,[],this),this._tickScheduled=!0))},s.prototype._tick=function(){if(this.isPaused||this.isFinished)return!1;var e=null,t=Math.min(this.max,this.index+16384);if(this.index>=this.max)return this.end();switch(this.type){case"string":e=this.data.substring(this.index,t);break;case"uint8array":e=this.data.subarray(this.index,t);break;case"array":case"nodebuffer":e=this.data.slice(this.index,t)}return this.index=t,this.push({data:e,meta:{percent:this.max?this.index/this.max*100:0}})},t.exports=s},{"../utils":32,"./GenericWorker":28}],28:[function(e,t,r){"use strict";function n(e){this.name=e||"default",this.streamInfo={},this.generatedError=null,this.extraStreamInfo={},this.isPaused=!0,this.isFinished=!1,this.isLocked=!1,this._listeners={data:[],end:[],error:[]},this.previous=null}n.prototype={push:function(e){this.emit("data",e)},end:function(){if(this.isFinished)return!1;this.flush();try{this.emit("end"),this.cleanUp(),this.isFinished=!0}catch(e){this.emit("error",e)}return!0},error:function(e){return!this.isFinished&&(this.isPaused?this.generatedError=e:(this.isFinished=!0,this.emit("error",e),this.previous&&this.previous.error(e),this.cleanUp()),!0)},on:function(e,t){return this._listeners[e].push(t),this},cleanUp:function(){this.streamInfo=this.generatedError=this.extraStreamInfo=null,this._listeners=[]},emit:function(e,t){if(this._listeners[e])for(var r=0;r<this._listeners[e].length;r++)this._listeners[e][r].call(this,t)},pipe:function(e){return e.registerPrevious(this)},registerPrevious:function(e){if(this.isLocked)throw new Error("The stream '"+this+"' has already been used.");this.streamInfo=e.streamInfo,this.mergeStreamInfo(),this.previous=e;var t=this;return e.on("data",function(e){t.processChunk(e)}),e.on("end",function(){t.end()}),e.on("error",function(e){t.error(e)}),this},pause:function(){return!this.isPaused&&!this.isFinished&&(this.isPaused=!0,this.previous&&this.previous.pause(),!0)},resume:function(){if(!this.isPaused||this.isFinished)return!1;var e=this.isPaused=!1;return this.generatedError&&(this.error(this.generatedError),e=!0),this.previous&&this.previous.resume(),!e},flush:function(){},processChunk:function(e){this.push(e)},withStreamInfo:function(e,t){return this.extraStreamInfo[e]=t,this.mergeStreamInfo(),this},mergeStreamInfo:function(){for(var e in this.extraStreamInfo)Object.prototype.hasOwnProperty.call(this.extraStreamInfo,e)&&(this.streamInfo[e]=this.extraStreamInfo[e])},lock:function(){if(this.isLocked)throw new Error("The stream '"+this+"' has already been used.");this.isLocked=!0,this.previous&&this.previous.lock()},toString:function(){var e="Worker "+this.name;return this.previous?this.previous+" -> "+e:e}},t.exports=n},{}],29:[function(e,t,r){"use strict";var h=e("../utils"),i=e("./ConvertWorker"),s=e("./GenericWorker"),u=e("../base64"),n=e("../support"),a=e("../external"),o=null;if(n.nodestream)try{o=e("../nodejs/NodejsStreamOutputAdapter")}catch(e){}function l(e,o){return new a.Promise(function(t,r){var n=[],i=e._internalType,s=e._outputType,a=e._mimeType;e.on("data",function(e,t){n.push(e),o&&o(t)}).on("error",function(e){n=[],r(e)}).on("end",function(){try{var e=function(e,t,r){switch(e){case"blob":return h.newBlob(h.transformTo("arraybuffer",t),r);case"base64":return u.encode(t);default:return h.transformTo(e,t)}}(s,function(e,t){var r,n=0,i=null,s=0;for(r=0;r<t.length;r++)s+=t[r].length;switch(e){case"string":return t.join("");case"array":return Array.prototype.concat.apply([],t);case"uint8array":for(i=new Uint8Array(s),r=0;r<t.length;r++)i.set(t[r],n),n+=t[r].length;return i;case"nodebuffer":return Buffer.concat(t);default:throw new Error("concat : unsupported type '"+e+"'")}}(i,n),a);t(e)}catch(e){r(e)}n=[]}).resume()})}function f(e,t,r){var n=t;switch(t){case"blob":case"arraybuffer":n="uint8array";break;case"base64":n="string"}try{this._internalType=n,this._outputType=t,this._mimeType=r,h.checkSupport(n),this._worker=e.pipe(new i(n)),e.lock()}catch(e){this._worker=new s("error"),this._worker.error(e)}}f.prototype={accumulate:function(e){return l(this,e)},on:function(e,t){var r=this;return"data"===e?this._worker.on(e,function(e){t.call(r,e.data,e.meta)}):this._worker.on(e,function(){h.delay(t,arguments,r)}),this},resume:function(){return h.delay(this._worker.resume,[],this._worker),this},pause:function(){return this._worker.pause(),this},toNodejsStream:function(e){if(h.checkSupport("nodestream"),"nodebuffer"!==this._outputType)throw new Error(this._outputType+" is not supported by this method");return new o(this,{objectMode:"nodebuffer"!==this._outputType},e)}},t.exports=f},{"../base64":1,"../external":6,"../nodejs/NodejsStreamOutputAdapter":13,"../support":30,"../utils":32,"./ConvertWorker":24,"./GenericWorker":28}],30:[function(e,t,r){"use strict";if(r.base64=!0,r.array=!0,r.string=!0,r.arraybuffer="undefined"!=typeof ArrayBuffer&&"undefined"!=typeof Uint8Array,r.nodebuffer="undefined"!=typeof Buffer,r.uint8array="undefined"!=typeof Uint8Array,"undefined"==typeof ArrayBuffer)r.blob=!1;else{var n=new ArrayBuffer(0);try{r.blob=0===new Blob([n],{type:"application/zip"}).size}catch(e){try{var i=new(self.BlobBuilder||self.WebKitBlobBuilder||self.MozBlobBuilder||self.MSBlobBuilder);i.append(n),r.blob=0===i.getBlob("application/zip").size}catch(e){r.blob=!1}}}try{r.nodestream=!!e("readable-stream").Readable}catch(e){r.nodestream=!1}},{"readable-stream":16}],31:[function(e,t,s){"use strict";for(var o=e("./utils"),h=e("./support"),r=e("./nodejsUtils"),n=e("./stream/GenericWorker"),u=new Array(256),i=0;i<256;i++)u[i]=252<=i?6:248<=i?5:240<=i?4:224<=i?3:192<=i?2:1;u[254]=u[254]=1;function a(){n.call(this,"utf-8 decode"),this.leftOver=null}function l(){n.call(this,"utf-8 encode")}s.utf8encode=function(e){return h.nodebuffer?r.newBufferFrom(e,"utf-8"):function(e){var t,r,n,i,s,a=e.length,o=0;for(i=0;i<a;i++)55296==(64512&(r=e.charCodeAt(i)))&&i+1<a&&56320==(64512&(n=e.charCodeAt(i+1)))&&(r=65536+(r-55296<<10)+(n-56320),i++),o+=r<128?1:r<2048?2:r<65536?3:4;for(t=h.uint8array?new Uint8Array(o):new Array(o),i=s=0;s<o;i++)55296==(64512&(r=e.charCodeAt(i)))&&i+1<a&&56320==(64512&(n=e.charCodeAt(i+1)))&&(r=65536+(r-55296<<10)+(n-56320),i++),r<128?t[s++]=r:(r<2048?t[s++]=192|r>>>6:(r<65536?t[s++]=224|r>>>12:(t[s++]=240|r>>>18,t[s++]=128|r>>>12&63),t[s++]=128|r>>>6&63),t[s++]=128|63&r);return t}(e)},s.utf8decode=function(e){return h.nodebuffer?o.transformTo("nodebuffer",e).toString("utf-8"):function(e){var t,r,n,i,s=e.length,a=new Array(2*s);for(t=r=0;t<s;)if((n=e[t++])<128)a[r++]=n;else if(4<(i=u[n]))a[r++]=65533,t+=i-1;else{for(n&=2===i?31:3===i?15:7;1<i&&t<s;)n=n<<6|63&e[t++],i--;1<i?a[r++]=65533:n<65536?a[r++]=n:(n-=65536,a[r++]=55296|n>>10&1023,a[r++]=56320|1023&n)}return a.length!==r&&(a.subarray?a=a.subarray(0,r):a.length=r),o.applyFromCharCode(a)}(e=o.transformTo(h.uint8array?"uint8array":"array",e))},o.inherits(a,n),a.prototype.processChunk=function(e){var t=o.transformTo(h.uint8array?"uint8array":"array",e.data);if(this.leftOver&&this.leftOver.length){if(h.uint8array){var r=t;(t=new Uint8Array(r.length+this.leftOver.length)).set(this.leftOver,0),t.set(r,this.leftOver.length)}else t=this.leftOver.concat(t);this.leftOver=null}var n=function(e,t){var r;for((t=t||e.length)>e.length&&(t=e.length),r=t-1;0<=r&&128==(192&e[r]);)r--;return r<0?t:0===r?t:r+u[e[r]]>t?r:t}(t),i=t;n!==t.length&&(h.uint8array?(i=t.subarray(0,n),this.leftOver=t.subarray(n,t.length)):(i=t.slice(0,n),this.leftOver=t.slice(n,t.length))),this.push({data:s.utf8decode(i),meta:e.meta})},a.prototype.flush=function(){this.leftOver&&this.leftOver.length&&(this.push({data:s.utf8decode(this.leftOver),meta:{}}),this.leftOver=null)},s.Utf8DecodeWorker=a,o.inherits(l,n),l.prototype.processChunk=function(e){this.push({data:s.utf8encode(e.data),meta:e.meta})},s.Utf8EncodeWorker=l},{"./nodejsUtils":14,"./stream/GenericWorker":28,"./support":30,"./utils":32}],32:[function(e,t,a){"use strict";var o=e("./support"),h=e("./base64"),r=e("./nodejsUtils"),u=e("./external");function n(e){return e}function l(e,t){for(var r=0;r<e.length;++r)t[r]=255&e.charCodeAt(r);return t}e("setimmediate"),a.newBlob=function(t,r){a.checkSupport("blob");try{return new Blob([t],{type:r})}catch(e){try{var n=new(self.BlobBuilder||self.WebKitBlobBuilder||self.MozBlobBuilder||self.MSBlobBuilder);return n.append(t),n.getBlob(r)}catch(e){throw new Error("Bug : can't construct the Blob.")}}};var i={stringifyByChunk:function(e,t,r){var n=[],i=0,s=e.length;if(s<=r)return String.fromCharCode.apply(null,e);for(;i<s;)"array"===t||"nodebuffer"===t?n.push(String.fromCharCode.apply(null,e.slice(i,Math.min(i+r,s)))):n.push(String.fromCharCode.apply(null,e.subarray(i,Math.min(i+r,s)))),i+=r;return n.join("")},stringifyByChar:function(e){for(var t="",r=0;r<e.length;r++)t+=String.fromCharCode(e[r]);return t},applyCanBeUsed:{uint8array:function(){try{return o.uint8array&&1===String.fromCharCode.apply(null,new Uint8Array(1)).length}catch(e){return!1}}(),nodebuffer:function(){try{return o.nodebuffer&&1===String.fromCharCode.apply(null,r.allocBuffer(1)).length}catch(e){return!1}}()}};function s(e){var t=65536,r=a.getTypeOf(e),n=!0;if("uint8array"===r?n=i.applyCanBeUsed.uint8array:"nodebuffer"===r&&(n=i.applyCanBeUsed.nodebuffer),n)for(;1<t;)try{return i.stringifyByChunk(e,r,t)}catch(e){t=Math.floor(t/2)}return i.stringifyByChar(e)}function f(e,t){for(var r=0;r<e.length;r++)t[r]=e[r];return t}a.applyFromCharCode=s;var c={};c.string={string:n,array:function(e){return l(e,new Array(e.length))},arraybuffer:function(e){return c.string.uint8array(e).buffer},uint8array:function(e){return l(e,new Uint8Array(e.length))},nodebuffer:function(e){return l(e,r.allocBuffer(e.length))}},c.array={string:s,array:n,arraybuffer:function(e){return new Uint8Array(e).buffer},uint8array:function(e){return new Uint8Array(e)},nodebuffer:function(e){return r.newBufferFrom(e)}},c.arraybuffer={string:function(e){return s(new Uint8Array(e))},array:function(e){return f(new Uint8Array(e),new Array(e.byteLength))},arraybuffer:n,uint8array:function(e){return new Uint8Array(e)},nodebuffer:function(e){return r.newBufferFrom(new Uint8Array(e))}},c.uint8array={string:s,array:function(e){return f(e,new Array(e.length))},arraybuffer:function(e){return e.buffer},uint8array:n,nodebuffer:function(e){return r.newBufferFrom(e)}},c.nodebuffer={string:s,array:function(e){return f(e,new Array(e.length))},arraybuffer:function(e){return c.nodebuffer.uint8array(e).buffer},uint8array:function(e){return f(e,new Uint8Array(e.length))},nodebuffer:n},a.transformTo=function(e,t){if(t=t||"",!e)return t;a.checkSupport(e);var r=a.getTypeOf(t);return c[r][e](t)},a.resolve=function(e){for(var t=e.split("/"),r=[],n=0;n<t.length;n++){var i=t[n];"."===i||""===i&&0!==n&&n!==t.length-1||(".."===i?r.pop():r.push(i))}return r.join("/")},a.getTypeOf=function(e){return"string"==typeof e?"string":"[object Array]"===Object.prototype.toString.call(e)?"array":o.nodebuffer&&r.isBuffer(e)?"nodebuffer":o.uint8array&&e instanceof Uint8Array?"uint8array":o.arraybuffer&&e instanceof ArrayBuffer?"arraybuffer":void 0},a.checkSupport=function(e){if(!o[e.toLowerCase()])throw new Error(e+" is not supported by this platform")},a.MAX_VALUE_16BITS=65535,a.MAX_VALUE_32BITS=-1,a.pretty=function(e){var t,r,n="";for(r=0;r<(e||"").length;r++)n+="\\x"+((t=e.charCodeAt(r))<16?"0":"")+t.toString(16).toUpperCase();return n},a.delay=function(e,t,r){setImmediate(function(){e.apply(r||null,t||[])})},a.inherits=function(e,t){function r(){}r.prototype=t.prototype,e.prototype=new r},a.extend=function(){var e,t,r={};for(e=0;e<arguments.length;e++)for(t in arguments[e])Object.prototype.hasOwnProperty.call(arguments[e],t)&&void 0===r[t]&&(r[t]=arguments[e][t]);return r},a.prepareContent=function(r,e,n,i,s){return u.Promise.resolve(e).then(function(n){return o.blob&&(n instanceof Blob||-1!==["[object File]","[object Blob]"].indexOf(Object.prototype.toString.call(n)))&&"undefined"!=typeof FileReader?new u.Promise(function(t,r){var e=new FileReader;e.onload=function(e){t(e.target.result)},e.onerror=function(e){r(e.target.error)},e.readAsArrayBuffer(n)}):n}).then(function(e){var t=a.getTypeOf(e);return t?("arraybuffer"===t?e=a.transformTo("uint8array",e):"string"===t&&(s?e=h.decode(e):n&&!0!==i&&(e=function(e){return l(e,o.uint8array?new Uint8Array(e.length):new Array(e.length))}(e))),e):u.Promise.reject(new Error("Can't read the data of '"+r+"'. Is it in a supported JavaScript type (String, Blob, ArrayBuffer, etc) ?"))})}},{"./base64":1,"./external":6,"./nodejsUtils":14,"./support":30,setimmediate:54}],33:[function(e,t,r){"use strict";var n=e("./reader/readerFor"),i=e("./utils"),s=e("./signature"),a=e("./zipEntry"),o=e("./support");function h(e){this.files=[],this.loadOptions=e}h.prototype={checkSignature:function(e){if(!this.reader.readAndCheckSignature(e)){this.reader.index-=4;var t=this.reader.readString(4);throw new Error("Corrupted zip or bug: unexpected signature ("+i.pretty(t)+", expected "+i.pretty(e)+")")}},isSignature:function(e,t){var r=this.reader.index;this.reader.setIndex(e);var n=this.reader.readString(4)===t;return this.reader.setIndex(r),n},readBlockEndOfCentral:function(){this.diskNumber=this.reader.readInt(2),this.diskWithCentralDirStart=this.reader.readInt(2),this.centralDirRecordsOnThisDisk=this.reader.readInt(2),this.centralDirRecords=this.reader.readInt(2),this.centralDirSize=this.reader.readInt(4),this.centralDirOffset=this.reader.readInt(4),this.zipCommentLength=this.reader.readInt(2);var e=this.reader.readData(this.zipCommentLength),t=o.uint8array?"uint8array":"array",r=i.transformTo(t,e);this.zipComment=this.loadOptions.decodeFileName(r)},readBlockZip64EndOfCentral:function(){this.zip64EndOfCentralSize=this.reader.readInt(8),this.reader.skip(4),this.diskNumber=this.reader.readInt(4),this.diskWithCentralDirStart=this.reader.readInt(4),this.centralDirRecordsOnThisDisk=this.reader.readInt(8),this.centralDirRecords=this.reader.readInt(8),this.centralDirSize=this.reader.readInt(8),this.centralDirOffset=this.reader.readInt(8),this.zip64ExtensibleData={};for(var e,t,r,n=this.zip64EndOfCentralSize-44;0<n;)e=this.reader.readInt(2),t=this.reader.readInt(4),r=this.reader.readData(t),this.zip64ExtensibleData[e]={id:e,length:t,value:r}},readBlockZip64EndOfCentralLocator:function(){if(this.diskWithZip64CentralDirStart=this.reader.readInt(4),this.relativeOffsetEndOfZip64CentralDir=this.reader.readInt(8),this.disksCount=this.reader.readInt(4),1<this.disksCount)throw new Error("Multi-volumes zip are not supported")},readLocalFiles:function(){var e,t;for(e=0;e<this.files.length;e++)t=this.files[e],this.reader.setIndex(t.localHeaderOffset),this.checkSignature(s.LOCAL_FILE_HEADER),t.readLocalPart(this.reader),t.handleUTF8(),t.processAttributes()},readCentralDir:function(){var e;for(this.reader.setIndex(this.centralDirOffset);this.reader.readAndCheckSignature(s.CENTRAL_FILE_HEADER);)(e=new a({zip64:this.zip64},this.loadOptions)).readCentralPart(this.reader),this.files.push(e);if(this.centralDirRecords!==this.files.length&&0!==this.centralDirRecords&&0===this.files.length)throw new Error("Corrupted zip or bug: expected "+this.centralDirRecords+" records in central dir, got "+this.files.length)},readEndOfCentral:function(){var e=this.reader.lastIndexOfSignature(s.CENTRAL_DIRECTORY_END);if(e<0)throw!this.isSignature(0,s.LOCAL_FILE_HEADER)?new Error("Can't find end of central directory : is this a zip file ? If it is, see https://stuk.github.io/jszip/documentation/howto/read_zip.html"):new Error("Corrupted zip: can't find end of central directory");this.reader.setIndex(e);var t=e;if(this.checkSignature(s.CENTRAL_DIRECTORY_END),this.readBlockEndOfCentral(),this.diskNumber===i.MAX_VALUE_16BITS||this.diskWithCentralDirStart===i.MAX_VALUE_16BITS||this.centralDirRecordsOnThisDisk===i.MAX_VALUE_16BITS||this.centralDirRecords===i.MAX_VALUE_16BITS||this.centralDirSize===i.MAX_VALUE_32BITS||this.centralDirOffset===i.MAX_VALUE_32BITS){if(this.zip64=!0,(e=this.reader.lastIndexOfSignature(s.ZIP64_CENTRAL_DIRECTORY_LOCATOR))<0)throw new Error("Corrupted zip: can't find the ZIP64 end of central directory locator");if(this.reader.setIndex(e),this.checkSignature(s.ZIP64_CENTRAL_DIRECTORY_LOCATOR),this.readBlockZip64EndOfCentralLocator(),!this.isSignature(this.relativeOffsetEndOfZip64CentralDir,s.ZIP64_CENTRAL_DIRECTORY_END)&&(this.relativeOffsetEndOfZip64CentralDir=this.reader.lastIndexOfSignature(s.ZIP64_CENTRAL_DIRECTORY_END),this.relativeOffsetEndOfZip64CentralDir<0))throw new Error("Corrupted zip: can't find the ZIP64 end of central directory");this.reader.setIndex(this.relativeOffsetEndOfZip64CentralDir),this.checkSignature(s.ZIP64_CENTRAL_DIRECTORY_END),this.readBlockZip64EndOfCentral()}var r=this.centralDirOffset+this.centralDirSize;this.zip64&&(r+=20,r+=12+this.zip64EndOfCentralSize);var n=t-r;if(0<n)this.isSignature(t,s.CENTRAL_FILE_HEADER)||(this.reader.zero=n);else if(n<0)throw new Error("Corrupted zip: missing "+Math.abs(n)+" bytes.")},prepareReader:function(e){this.reader=n(e)},load:function(e){this.prepareReader(e),this.readEndOfCentral(),this.readCentralDir(),this.readLocalFiles()}},t.exports=h},{"./reader/readerFor":22,"./signature":23,"./support":30,"./utils":32,"./zipEntry":34}],34:[function(e,t,r){"use strict";var n=e("./reader/readerFor"),s=e("./utils"),i=e("./compressedObject"),a=e("./crc32"),o=e("./utf8"),h=e("./compressions"),u=e("./support");function l(e,t){this.options=e,this.loadOptions=t}l.prototype={isEncrypted:function(){return 1==(1&this.bitFlag)},useUTF8:function(){return 2048==(2048&this.bitFlag)},readLocalPart:function(e){var t,r;if(e.skip(22),this.fileNameLength=e.readInt(2),r=e.readInt(2),this.fileName=e.readData(this.fileNameLength),e.skip(r),-1===this.compressedSize||-1===this.uncompressedSize)throw new Error("Bug or corrupted zip : didn't get enough information from the central directory (compressedSize === -1 || uncompressedSize === -1)");if(null===(t=function(e){for(var t in h)if(Object.prototype.hasOwnProperty.call(h,t)&&h[t].magic===e)return h[t];return null}(this.compressionMethod)))throw new Error("Corrupted zip : compression "+s.pretty(this.compressionMethod)+" unknown (inner file : "+s.transformTo("string",this.fileName)+")");this.decompressed=new i(this.compressedSize,this.uncompressedSize,this.crc32,t,e.readData(this.compressedSize))},readCentralPart:function(e){this.versionMadeBy=e.readInt(2),e.skip(2),this.bitFlag=e.readInt(2),this.compressionMethod=e.readString(2),this.date=e.readDate(),this.crc32=e.readInt(4),this.compressedSize=e.readInt(4),this.uncompressedSize=e.readInt(4);var t=e.readInt(2);if(this.extraFieldsLength=e.readInt(2),this.fileCommentLength=e.readInt(2),this.diskNumberStart=e.readInt(2),this.internalFileAttributes=e.readInt(2),this.externalFileAttributes=e.readInt(4),this.localHeaderOffset=e.readInt(4),this.isEncrypted())throw new Error("Encrypted zip are not supported");e.skip(t),this.readExtraFields(e),this.parseZIP64ExtraField(e),this.fileComment=e.readData(this.fileCommentLength)},processAttributes:function(){this.unixPermissions=null,this.dosPermissions=null;var e=this.versionMadeBy>>8;this.dir=!!(16&this.externalFileAttributes),0==e&&(this.dosPermissions=63&this.externalFileAttributes),3==e&&(this.unixPermissions=this.externalFileAttributes>>16&65535),this.dir||"/"!==this.fileNameStr.slice(-1)||(this.dir=!0)},parseZIP64ExtraField:function(){if(this.extraFields[1]){var e=n(this.extraFields[1].value);this.uncompressedSize===s.MAX_VALUE_32BITS&&(this.uncompressedSize=e.readInt(8)),this.compressedSize===s.MAX_VALUE_32BITS&&(this.compressedSize=e.readInt(8)),this.localHeaderOffset===s.MAX_VALUE_32BITS&&(this.localHeaderOffset=e.readInt(8)),this.diskNumberStart===s.MAX_VALUE_32BITS&&(this.diskNumberStart=e.readInt(4))}},readExtraFields:function(e){var t,r,n,i=e.index+this.extraFieldsLength;for(this.extraFields||(this.extraFields={});e.index+4<i;)t=e.readInt(2),r=e.readInt(2),n=e.readData(r),this.extraFields[t]={id:t,length:r,value:n};e.setIndex(i)},handleUTF8:function(){var e=u.uint8array?"uint8array":"array";if(this.useUTF8())this.fileNameStr=o.utf8decode(this.fileName),this.fileCommentStr=o.utf8decode(this.fileComment);else{var t=this.findExtraFieldUnicodePath();if(null!==t)this.fileNameStr=t;else{var r=s.transformTo(e,this.fileName);this.fileNameStr=this.loadOptions.decodeFileName(r)}var n=this.findExtraFieldUnicodeComment();if(null!==n)this.fileCommentStr=n;else{var i=s.transformTo(e,this.fileComment);this.fileCommentStr=this.loadOptions.decodeFileName(i)}}},findExtraFieldUnicodePath:function(){var e=this.extraFields[28789];if(e){var t=n(e.value);return 1!==t.readInt(1)?null:a(this.fileName)!==t.readInt(4)?null:o.utf8decode(t.readData(e.length-5))}return null},findExtraFieldUnicodeComment:function(){var e=this.extraFields[25461];if(e){var t=n(e.value);return 1!==t.readInt(1)?null:a(this.fileComment)!==t.readInt(4)?null:o.utf8decode(t.readData(e.length-5))}return null}},t.exports=l},{"./compressedObject":2,"./compressions":3,"./crc32":4,"./reader/readerFor":22,"./support":30,"./utf8":31,"./utils":32}],35:[function(e,t,r){"use strict";function n(e,t,r){this.name=e,this.dir=r.dir,this.date=r.date,this.comment=r.comment,this.unixPermissions=r.unixPermissions,this.dosPermissions=r.dosPermissions,this._data=t,this._dataBinary=r.binary,this.options={compression:r.compression,compressionOptions:r.compressionOptions}}var s=e("./stream/StreamHelper"),i=e("./stream/DataWorker"),a=e("./utf8"),o=e("./compressedObject"),h=e("./stream/GenericWorker");n.prototype={internalStream:function(e){var t=null,r="string";try{if(!e)throw new Error("No output type specified.");var n="string"===(r=e.toLowerCase())||"text"===r;"binarystring"!==r&&"text"!==r||(r="string"),t=this._decompressWorker();var i=!this._dataBinary;i&&!n&&(t=t.pipe(new a.Utf8EncodeWorker)),!i&&n&&(t=t.pipe(new a.Utf8DecodeWorker))}catch(e){(t=new h("error")).error(e)}return new s(t,r,"")},async:function(e,t){return this.internalStream(e).accumulate(t)},nodeStream:function(e,t){return this.internalStream(e||"nodebuffer").toNodejsStream(t)},_compressWorker:function(e,t){if(this._data instanceof o&&this._data.compression.magic===e.magic)return this._data.getCompressedWorker();var r=this._decompressWorker();return this._dataBinary||(r=r.pipe(new a.Utf8EncodeWorker)),o.createWorkerFrom(r,e,t)},_decompressWorker:function(){return this._data instanceof o?this._data.getContentWorker():this._data instanceof h?this._data:new i(this._data)}};for(var u=["asText","asBinary","asNodeBuffer","asUint8Array","asArrayBuffer"],l=function(){throw new Error("This method has been removed in JSZip 3.0, please check the upgrade guide.")},f=0;f<u.length;f++)n.prototype[u[f]]=l;t.exports=n},{"./compressedObject":2,"./stream/DataWorker":27,"./stream/GenericWorker":28,"./stream/StreamHelper":29,"./utf8":31}],36:[function(e,l,t){(function(t){"use strict";var r,n,e=t.MutationObserver||t.WebKitMutationObserver;if(e){var i=0,s=new e(u),a=t.document.createTextNode("");s.observe(a,{characterData:!0}),r=function(){a.data=i=++i%2}}else if(t.setImmediate||void 0===t.MessageChannel)r="document"in t&&"onreadystatechange"in t.document.createElement("script")?function(){var e=t.document.createElement("script");e.onreadystatechange=function(){u(),e.onreadystatechange=null,e.parentNode.removeChild(e),e=null},t.document.documentElement.appendChild(e)}:function(){setTimeout(u,0)};else{var o=new t.MessageChannel;o.port1.onmessage=u,r=function(){o.port2.postMessage(0)}}var h=[];function u(){var e,t;n=!0;for(var r=h.length;r;){for(t=h,h=[],e=-1;++e<r;)t[e]();r=h.length}n=!1}l.exports=function(e){1!==h.push(e)||n||r()}}).call(this,"undefined"!=typeof global?global:"undefined"!=typeof self?self:"undefined"!=typeof window?window:{})},{}],37:[function(e,t,r){"use strict";var i=e("immediate");function u(){}var l={},s=["REJECTED"],a=["FULFILLED"],n=["PENDING"];function o(e){if("function"!=typeof e)throw new TypeError("resolver must be a function");this.state=n,this.queue=[],this.outcome=void 0,e!==u&&d(this,e)}function h(e,t,r){this.promise=e,"function"==typeof t&&(this.onFulfilled=t,this.callFulfilled=this.otherCallFulfilled),"function"==typeof r&&(this.onRejected=r,this.callRejected=this.otherCallRejected)}function f(t,r,n){i(function(){var e;try{e=r(n)}catch(e){return l.reject(t,e)}e===t?l.reject(t,new TypeError("Cannot resolve promise with itself")):l.resolve(t,e)})}function c(e){var t=e&&e.then;if(e&&("object"==typeof e||"function"==typeof e)&&"function"==typeof t)return function(){t.apply(e,arguments)}}function d(t,e){var r=!1;function n(e){r||(r=!0,l.reject(t,e))}function i(e){r||(r=!0,l.resolve(t,e))}var s=p(function(){e(i,n)});"error"===s.status&&n(s.value)}function p(e,t){var r={};try{r.value=e(t),r.status="success"}catch(e){r.status="error",r.value=e}return r}(t.exports=o).prototype.finally=function(t){if("function"!=typeof t)return this;var r=this.constructor;return this.then(function(e){return r.resolve(t()).then(function(){return e})},function(e){return r.resolve(t()).then(function(){throw e})})},o.prototype.catch=function(e){return this.then(null,e)},o.prototype.then=function(e,t){if("function"!=typeof e&&this.state===a||"function"!=typeof t&&this.state===s)return this;var r=new this.constructor(u);this.state!==n?f(r,this.state===a?e:t,this.outcome):this.queue.push(new h(r,e,t));return r},h.prototype.callFulfilled=function(e){l.resolve(this.promise,e)},h.prototype.otherCallFulfilled=function(e){f(this.promise,this.onFulfilled,e)},h.prototype.callRejected=function(e){l.reject(this.promise,e)},h.prototype.otherCallRejected=function(e){f(this.promise,this.onRejected,e)},l.resolve=function(e,t){var r=p(c,t);if("error"===r.status)return l.reject(e,r.value);var n=r.value;if(n)d(e,n);else{e.state=a,e.outcome=t;for(var i=-1,s=e.queue.length;++i<s;)e.queue[i].callFulfilled(t)}return e},l.reject=function(e,t){e.state=s,e.outcome=t;for(var r=-1,n=e.queue.length;++r<n;)e.queue[r].callRejected(t);return e},o.resolve=function(e){if(e instanceof this)return e;return l.resolve(new this(u),e)},o.reject=function(e){var t=new this(u);return l.reject(t,e)},o.all=function(e){var r=this;if("[object Array]"!==Object.prototype.toString.call(e))return this.reject(new TypeError("must be an array"));var n=e.length,i=!1;if(!n)return this.resolve([]);var s=new Array(n),a=0,t=-1,o=new this(u);for(;++t<n;)h(e[t],t);return o;function h(e,t){r.resolve(e).then(function(e){s[t]=e,++a!==n||i||(i=!0,l.resolve(o,s))},function(e){i||(i=!0,l.reject(o,e))})}},o.race=function(e){var t=this;if("[object Array]"!==Object.prototype.toString.call(e))return this.reject(new TypeError("must be an array"));var r=e.length,n=!1;if(!r)return this.resolve([]);var i=-1,s=new this(u);for(;++i<r;)a=e[i],t.resolve(a).then(function(e){n||(n=!0,l.resolve(s,e))},function(e){n||(n=!0,l.reject(s,e))});var a;return s}},{immediate:36}],38:[function(e,t,r){"use strict";var n={};(0,e("./lib/utils/common").assign)(n,e("./lib/deflate"),e("./lib/inflate"),e("./lib/zlib/constants")),t.exports=n},{"./lib/deflate":39,"./lib/inflate":40,"./lib/utils/common":41,"./lib/zlib/constants":44}],39:[function(e,t,r){"use strict";var a=e("./zlib/deflate"),o=e("./utils/common"),h=e("./utils/strings"),i=e("./zlib/messages"),s=e("./zlib/zstream"),u=Object.prototype.toString,l=0,f=-1,c=0,d=8;function p(e){if(!(this instanceof p))return new p(e);this.options=o.assign({level:f,method:d,chunkSize:16384,windowBits:15,memLevel:8,strategy:c,to:""},e||{});var t=this.options;t.raw&&0<t.windowBits?t.windowBits=-t.windowBits:t.gzip&&0<t.windowBits&&t.windowBits<16&&(t.windowBits+=16),this.err=0,this.msg="",this.ended=!1,this.chunks=[],this.strm=new s,this.strm.avail_out=0;var r=a.deflateInit2(this.strm,t.level,t.method,t.windowBits,t.memLevel,t.strategy);if(r!==l)throw new Error(i[r]);if(t.header&&a.deflateSetHeader(this.strm,t.header),t.dictionary){var n;if(n="string"==typeof t.dictionary?h.string2buf(t.dictionary):"[object ArrayBuffer]"===u.call(t.dictionary)?new Uint8Array(t.dictionary):t.dictionary,(r=a.deflateSetDictionary(this.strm,n))!==l)throw new Error(i[r]);this._dict_set=!0}}function n(e,t){var r=new p(t);if(r.push(e,!0),r.err)throw r.msg||i[r.err];return r.result}p.prototype.push=function(e,t){var r,n,i=this.strm,s=this.options.chunkSize;if(this.ended)return!1;n=t===~~t?t:!0===t?4:0,"string"==typeof e?i.input=h.string2buf(e):"[object ArrayBuffer]"===u.call(e)?i.input=new Uint8Array(e):i.input=e,i.next_in=0,i.avail_in=i.input.length;do{if(0===i.avail_out&&(i.output=new o.Buf8(s),i.next_out=0,i.avail_out=s),1!==(r=a.deflate(i,n))&&r!==l)return this.onEnd(r),!(this.ended=!0);0!==i.avail_out&&(0!==i.avail_in||4!==n&&2!==n)||("string"===this.options.to?this.onData(h.buf2binstring(o.shrinkBuf(i.output,i.next_out))):this.onData(o.shrinkBuf(i.output,i.next_out)))}while((0<i.avail_in||0===i.avail_out)&&1!==r);return 4===n?(r=a.deflateEnd(this.strm),this.onEnd(r),this.ended=!0,r===l):2!==n||(this.onEnd(l),!(i.avail_out=0))},p.prototype.onData=function(e){this.chunks.push(e)},p.prototype.onEnd=function(e){e===l&&("string"===this.options.to?this.result=this.chunks.join(""):this.result=o.flattenChunks(this.chunks)),this.chunks=[],this.err=e,this.msg=this.strm.msg},r.Deflate=p,r.deflate=n,r.deflateRaw=function(e,t){return(t=t||{}).raw=!0,n(e,t)},r.gzip=function(e,t){return(t=t||{}).gzip=!0,n(e,t)}},{"./utils/common":41,"./utils/strings":42,"./zlib/deflate":46,"./zlib/messages":51,"./zlib/zstream":53}],40:[function(e,t,r){"use strict";var c=e("./zlib/inflate"),d=e("./utils/common"),p=e("./utils/strings"),m=e("./zlib/constants"),n=e("./zlib/messages"),i=e("./zlib/zstream"),s=e("./zlib/gzheader"),_=Object.prototype.toString;function a(e){if(!(this instanceof a))return new a(e);this.options=d.assign({chunkSize:16384,windowBits:0,to:""},e||{});var t=this.options;t.raw&&0<=t.windowBits&&t.windowBits<16&&(t.windowBits=-t.windowBits,0===t.windowBits&&(t.windowBits=-15)),!(0<=t.windowBits&&t.windowBits<16)||e&&e.windowBits||(t.windowBits+=32),15<t.windowBits&&t.windowBits<48&&0==(15&t.windowBits)&&(t.windowBits|=15),this.err=0,this.msg="",this.ended=!1,this.chunks=[],this.strm=new i,this.strm.avail_out=0;var r=c.inflateInit2(this.strm,t.windowBits);if(r!==m.Z_OK)throw new Error(n[r]);this.header=new s,c.inflateGetHeader(this.strm,this.header)}function o(e,t){var r=new a(t);if(r.push(e,!0),r.err)throw r.msg||n[r.err];return r.result}a.prototype.push=function(e,t){var r,n,i,s,a,o,h=this.strm,u=this.options.chunkSize,l=this.options.dictionary,f=!1;if(this.ended)return!1;n=t===~~t?t:!0===t?m.Z_FINISH:m.Z_NO_FLUSH,"string"==typeof e?h.input=p.binstring2buf(e):"[object ArrayBuffer]"===_.call(e)?h.input=new Uint8Array(e):h.input=e,h.next_in=0,h.avail_in=h.input.length;do{if(0===h.avail_out&&(h.output=new d.Buf8(u),h.next_out=0,h.avail_out=u),(r=c.inflate(h,m.Z_NO_FLUSH))===m.Z_NEED_DICT&&l&&(o="string"==typeof l?p.string2buf(l):"[object ArrayBuffer]"===_.call(l)?new Uint8Array(l):l,r=c.inflateSetDictionary(this.strm,o)),r===m.Z_BUF_ERROR&&!0===f&&(r=m.Z_OK,f=!1),r!==m.Z_STREAM_END&&r!==m.Z_OK)return this.onEnd(r),!(this.ended=!0);h.next_out&&(0!==h.avail_out&&r!==m.Z_STREAM_END&&(0!==h.avail_in||n!==m.Z_FINISH&&n!==m.Z_SYNC_FLUSH)||("string"===this.options.to?(i=p.utf8border(h.output,h.next_out),s=h.next_out-i,a=p.buf2string(h.output,i),h.next_out=s,h.avail_out=u-s,s&&d.arraySet(h.output,h.output,i,s,0),this.onData(a)):this.onData(d.shrinkBuf(h.output,h.next_out)))),0===h.avail_in&&0===h.avail_out&&(f=!0)}while((0<h.avail_in||0===h.avail_out)&&r!==m.Z_STREAM_END);return r===m.Z_STREAM_END&&(n=m.Z_FINISH),n===m.Z_FINISH?(r=c.inflateEnd(this.strm),this.onEnd(r),this.ended=!0,r===m.Z_OK):n!==m.Z_SYNC_FLUSH||(this.onEnd(m.Z_OK),!(h.avail_out=0))},a.prototype.onData=function(e){this.chunks.push(e)},a.prototype.onEnd=function(e){e===m.Z_OK&&("string"===this.options.to?this.result=this.chunks.join(""):this.result=d.flattenChunks(this.chunks)),this.chunks=[],this.err=e,this.msg=this.strm.msg},r.Inflate=a,r.inflate=o,r.inflateRaw=function(e,t){return(t=t||{}).raw=!0,o(e,t)},r.ungzip=o},{"./utils/common":41,"./utils/strings":42,"./zlib/constants":44,"./zlib/gzheader":47,"./zlib/inflate":49,"./zlib/messages":51,"./zlib/zstream":53}],41:[function(e,t,r){"use strict";var n="undefined"!=typeof Uint8Array&&"undefined"!=typeof Uint16Array&&"undefined"!=typeof Int32Array;r.assign=function(e){for(var t=Array.prototype.slice.call(arguments,1);t.length;){var r=t.shift();if(r){if("object"!=typeof r)throw new TypeError(r+"must be non-object");for(var n in r)r.hasOwnProperty(n)&&(e[n]=r[n])}}return e},r.shrinkBuf=function(e,t){return e.length===t?e:e.subarray?e.subarray(0,t):(e.length=t,e)};var i={arraySet:function(e,t,r,n,i){if(t.subarray&&e.subarray)e.set(t.subarray(r,r+n),i);else for(var s=0;s<n;s++)e[i+s]=t[r+s]},flattenChunks:function(e){var t,r,n,i,s,a;for(t=n=0,r=e.length;t<r;t++)n+=e[t].length;for(a=new Uint8Array(n),t=i=0,r=e.length;t<r;t++)s=e[t],a.set(s,i),i+=s.length;return a}},s={arraySet:function(e,t,r,n,i){for(var s=0;s<n;s++)e[i+s]=t[r+s]},flattenChunks:function(e){return[].concat.apply([],e)}};r.setTyped=function(e){e?(r.Buf8=Uint8Array,r.Buf16=Uint16Array,r.Buf32=Int32Array,r.assign(r,i)):(r.Buf8=Array,r.Buf16=Array,r.Buf32=Array,r.assign(r,s))},r.setTyped(n)},{}],42:[function(e,t,r){"use strict";var h=e("./common"),i=!0,s=!0;try{String.fromCharCode.apply(null,[0])}catch(e){i=!1}try{String.fromCharCode.apply(null,new Uint8Array(1))}catch(e){s=!1}for(var u=new h.Buf8(256),n=0;n<256;n++)u[n]=252<=n?6:248<=n?5:240<=n?4:224<=n?3:192<=n?2:1;function l(e,t){if(t<65537&&(e.subarray&&s||!e.subarray&&i))return String.fromCharCode.apply(null,h.shrinkBuf(e,t));for(var r="",n=0;n<t;n++)r+=String.fromCharCode(e[n]);return r}u[254]=u[254]=1,r.string2buf=function(e){var t,r,n,i,s,a=e.length,o=0;for(i=0;i<a;i++)55296==(64512&(r=e.charCodeAt(i)))&&i+1<a&&56320==(64512&(n=e.charCodeAt(i+1)))&&(r=65536+(r-55296<<10)+(n-56320),i++),o+=r<128?1:r<2048?2:r<65536?3:4;for(t=new h.Buf8(o),i=s=0;s<o;i++)55296==(64512&(r=e.charCodeAt(i)))&&i+1<a&&56320==(64512&(n=e.charCodeAt(i+1)))&&(r=65536+(r-55296<<10)+(n-56320),i++),r<128?t[s++]=r:(r<2048?t[s++]=192|r>>>6:(r<65536?t[s++]=224|r>>>12:(t[s++]=240|r>>>18,t[s++]=128|r>>>12&63),t[s++]=128|r>>>6&63),t[s++]=128|63&r);return t},r.buf2binstring=function(e){return l(e,e.length)},r.binstring2buf=function(e){for(var t=new h.Buf8(e.length),r=0,n=t.length;r<n;r++)t[r]=e.charCodeAt(r);return t},r.buf2string=function(e,t){var r,n,i,s,a=t||e.length,o=new Array(2*a);for(r=n=0;r<a;)if((i=e[r++])<128)o[n++]=i;else if(4<(s=u[i]))o[n++]=65533,r+=s-1;else{for(i&=2===s?31:3===s?15:7;1<s&&r<a;)i=i<<6|63&e[r++],s--;1<s?o[n++]=65533:i<65536?o[n++]=i:(i-=65536,o[n++]=55296|i>>10&1023,o[n++]=56320|1023&i)}return l(o,n)},r.utf8border=function(e,t){var r;for((t=t||e.length)>e.length&&(t=e.length),r=t-1;0<=r&&128==(192&e[r]);)r--;return r<0?t:0===r?t:r+u[e[r]]>t?r:t}},{"./common":41}],43:[function(e,t,r){"use strict";t.exports=function(e,t,r,n){for(var i=65535&e|0,s=e>>>16&65535|0,a=0;0!==r;){for(r-=a=2e3<r?2e3:r;s=s+(i=i+t[n++]|0)|0,--a;);i%=65521,s%=65521}return i|s<<16|0}},{}],44:[function(e,t,r){"use strict";t.exports={Z_NO_FLUSH:0,Z_PARTIAL_FLUSH:1,Z_SYNC_FLUSH:2,Z_FULL_FLUSH:3,Z_FINISH:4,Z_BLOCK:5,Z_TREES:6,Z_OK:0,Z_STREAM_END:1,Z_NEED_DICT:2,Z_ERRNO:-1,Z_STREAM_ERROR:-2,Z_DATA_ERROR:-3,Z_BUF_ERROR:-5,Z_NO_COMPRESSION:0,Z_BEST_SPEED:1,Z_BEST_COMPRESSION:9,Z_DEFAULT_COMPRESSION:-1,Z_FILTERED:1,Z_HUFFMAN_ONLY:2,Z_RLE:3,Z_FIXED:4,Z_DEFAULT_STRATEGY:0,Z_BINARY:0,Z_TEXT:1,Z_UNKNOWN:2,Z_DEFLATED:8}},{}],45:[function(e,t,r){"use strict";var o=function(){for(var e,t=[],r=0;r<256;r++){e=r;for(var n=0;n<8;n++)e=1&e?3988292384^e>>>1:e>>>1;t[r]=e}return t}();t.exports=function(e,t,r,n){var i=o,s=n+r;e^=-1;for(var a=n;a<s;a++)e=e>>>8^i[255&(e^t[a])];return-1^e}},{}],46:[function(e,t,r){"use strict";var h,c=e("../utils/common"),u=e("./trees"),d=e("./adler32"),p=e("./crc32"),n=e("./messages"),l=0,f=4,m=0,_=-2,g=-1,b=4,i=2,v=8,y=9,s=286,a=30,o=19,w=2*s+1,k=15,x=3,S=258,z=S+x+1,C=42,E=113,A=1,I=2,O=3,B=4;function R(e,t){return e.msg=n[t],t}function T(e){return(e<<1)-(4<e?9:0)}function D(e){for(var t=e.length;0<=--t;)e[t]=0}function F(e){var t=e.state,r=t.pending;r>e.avail_out&&(r=e.avail_out),0!==r&&(c.arraySet(e.output,t.pending_buf,t.pending_out,r,e.next_out),e.next_out+=r,t.pending_out+=r,e.total_out+=r,e.avail_out-=r,t.pending-=r,0===t.pending&&(t.pending_out=0))}function N(e,t){u._tr_flush_block(e,0<=e.block_start?e.block_start:-1,e.strstart-e.block_start,t),e.block_start=e.strstart,F(e.strm)}function U(e,t){e.pending_buf[e.pending++]=t}function P(e,t){e.pending_buf[e.pending++]=t>>>8&255,e.pending_buf[e.pending++]=255&t}function L(e,t){var r,n,i=e.max_chain_length,s=e.strstart,a=e.prev_length,o=e.nice_match,h=e.strstart>e.w_size-z?e.strstart-(e.w_size-z):0,u=e.window,l=e.w_mask,f=e.prev,c=e.strstart+S,d=u[s+a-1],p=u[s+a];e.prev_length>=e.good_match&&(i>>=2),o>e.lookahead&&(o=e.lookahead);do{if(u[(r=t)+a]===p&&u[r+a-1]===d&&u[r]===u[s]&&u[++r]===u[s+1]){s+=2,r++;do{}while(u[++s]===u[++r]&&u[++s]===u[++r]&&u[++s]===u[++r]&&u[++s]===u[++r]&&u[++s]===u[++r]&&u[++s]===u[++r]&&u[++s]===u[++r]&&u[++s]===u[++r]&&s<c);if(n=S-(c-s),s=c-S,a<n){if(e.match_start=t,o<=(a=n))break;d=u[s+a-1],p=u[s+a]}}}while((t=f[t&l])>h&&0!=--i);return a<=e.lookahead?a:e.lookahead}function j(e){var t,r,n,i,s,a,o,h,u,l,f=e.w_size;do{if(i=e.window_size-e.lookahead-e.strstart,e.strstart>=f+(f-z)){for(c.arraySet(e.window,e.window,f,f,0),e.match_start-=f,e.strstart-=f,e.block_start-=f,t=r=e.hash_size;n=e.head[--t],e.head[t]=f<=n?n-f:0,--r;);for(t=r=f;n=e.prev[--t],e.prev[t]=f<=n?n-f:0,--r;);i+=f}if(0===e.strm.avail_in)break;if(a=e.strm,o=e.window,h=e.strstart+e.lookahead,u=i,l=void 0,l=a.avail_in,u<l&&(l=u),r=0===l?0:(a.avail_in-=l,c.arraySet(o,a.input,a.next_in,l,h),1===a.state.wrap?a.adler=d(a.adler,o,l,h):2===a.state.wrap&&(a.adler=p(a.adler,o,l,h)),a.next_in+=l,a.total_in+=l,l),e.lookahead+=r,e.lookahead+e.insert>=x)for(s=e.strstart-e.insert,e.ins_h=e.window[s],e.ins_h=(e.ins_h<<e.hash_shift^e.window[s+1])&e.hash_mask;e.insert&&(e.ins_h=(e.ins_h<<e.hash_shift^e.window[s+x-1])&e.hash_mask,e.prev[s&e.w_mask]=e.head[e.ins_h],e.head[e.ins_h]=s,s++,e.insert--,!(e.lookahead+e.insert<x)););}while(e.lookahead<z&&0!==e.strm.avail_in)}function Z(e,t){for(var r,n;;){if(e.lookahead<z){if(j(e),e.lookahead<z&&t===l)return A;if(0===e.lookahead)break}if(r=0,e.lookahead>=x&&(e.ins_h=(e.ins_h<<e.hash_shift^e.window[e.strstart+x-1])&e.hash_mask,r=e.prev[e.strstart&e.w_mask]=e.head[e.ins_h],e.head[e.ins_h]=e.strstart),0!==r&&e.strstart-r<=e.w_size-z&&(e.match_length=L(e,r)),e.match_length>=x)if(n=u._tr_tally(e,e.strstart-e.match_start,e.match_length-x),e.lookahead-=e.match_length,e.match_length<=e.max_lazy_match&&e.lookahead>=x){for(e.match_length--;e.strstart++,e.ins_h=(e.ins_h<<e.hash_shift^e.window[e.strstart+x-1])&e.hash_mask,r=e.prev[e.strstart&e.w_mask]=e.head[e.ins_h],e.head[e.ins_h]=e.strstart,0!=--e.match_length;);e.strstart++}else e.strstart+=e.match_length,e.match_length=0,e.ins_h=e.window[e.strstart],e.ins_h=(e.ins_h<<e.hash_shift^e.window[e.strstart+1])&e.hash_mask;else n=u._tr_tally(e,0,e.window[e.strstart]),e.lookahead--,e.strstart++;if(n&&(N(e,!1),0===e.strm.avail_out))return A}return e.insert=e.strstart<x-1?e.strstart:x-1,t===f?(N(e,!0),0===e.strm.avail_out?O:B):e.last_lit&&(N(e,!1),0===e.strm.avail_out)?A:I}function W(e,t){for(var r,n,i;;){if(e.lookahead<z){if(j(e),e.lookahead<z&&t===l)return A;if(0===e.lookahead)break}if(r=0,e.lookahead>=x&&(e.ins_h=(e.ins_h<<e.hash_shift^e.window[e.strstart+x-1])&e.hash_mask,r=e.prev[e.strstart&e.w_mask]=e.head[e.ins_h],e.head[e.ins_h]=e.strstart),e.prev_length=e.match_length,e.prev_match=e.match_start,e.match_length=x-1,0!==r&&e.prev_length<e.max_lazy_match&&e.strstart-r<=e.w_size-z&&(e.match_length=L(e,r),e.match_length<=5&&(1===e.strategy||e.match_length===x&&4096<e.strstart-e.match_start)&&(e.match_length=x-1)),e.prev_length>=x&&e.match_length<=e.prev_length){for(i=e.strstart+e.lookahead-x,n=u._tr_tally(e,e.strstart-1-e.prev_match,e.prev_length-x),e.lookahead-=e.prev_length-1,e.prev_length-=2;++e.strstart<=i&&(e.ins_h=(e.ins_h<<e.hash_shift^e.window[e.strstart+x-1])&e.hash_mask,r=e.prev[e.strstart&e.w_mask]=e.head[e.ins_h],e.head[e.ins_h]=e.strstart),0!=--e.prev_length;);if(e.match_available=0,e.match_length=x-1,e.strstart++,n&&(N(e,!1),0===e.strm.avail_out))return A}else if(e.match_available){if((n=u._tr_tally(e,0,e.window[e.strstart-1]))&&N(e,!1),e.strstart++,e.lookahead--,0===e.strm.avail_out)return A}else e.match_available=1,e.strstart++,e.lookahead--}return e.match_available&&(n=u._tr_tally(e,0,e.window[e.strstart-1]),e.match_available=0),e.insert=e.strstart<x-1?e.strstart:x-1,t===f?(N(e,!0),0===e.strm.avail_out?O:B):e.last_lit&&(N(e,!1),0===e.strm.avail_out)?A:I}function M(e,t,r,n,i){this.good_length=e,this.max_lazy=t,this.nice_length=r,this.max_chain=n,this.func=i}function H(){this.strm=null,this.status=0,this.pending_buf=null,this.pending_buf_size=0,this.pending_out=0,this.pending=0,this.wrap=0,this.gzhead=null,this.gzindex=0,this.method=v,this.last_flush=-1,this.w_size=0,this.w_bits=0,this.w_mask=0,this.window=null,this.window_size=0,this.prev=null,this.head=null,this.ins_h=0,this.hash_size=0,this.hash_bits=0,this.hash_mask=0,this.hash_shift=0,this.block_start=0,this.match_length=0,this.prev_match=0,this.match_available=0,this.strstart=0,this.match_start=0,this.lookahead=0,this.prev_length=0,this.max_chain_length=0,this.max_lazy_match=0,this.level=0,this.strategy=0,this.good_match=0,this.nice_match=0,this.dyn_ltree=new c.Buf16(2*w),this.dyn_dtree=new c.Buf16(2*(2*a+1)),this.bl_tree=new c.Buf16(2*(2*o+1)),D(this.dyn_ltree),D(this.dyn_dtree),D(this.bl_tree),this.l_desc=null,this.d_desc=null,this.bl_desc=null,this.bl_count=new c.Buf16(k+1),this.heap=new c.Buf16(2*s+1),D(this.heap),this.heap_len=0,this.heap_max=0,this.depth=new c.Buf16(2*s+1),D(this.depth),this.l_buf=0,this.lit_bufsize=0,this.last_lit=0,this.d_buf=0,this.opt_len=0,this.static_len=0,this.matches=0,this.insert=0,this.bi_buf=0,this.bi_valid=0}function G(e){var t;return e&&e.state?(e.total_in=e.total_out=0,e.data_type=i,(t=e.state).pending=0,t.pending_out=0,t.wrap<0&&(t.wrap=-t.wrap),t.status=t.wrap?C:E,e.adler=2===t.wrap?0:1,t.last_flush=l,u._tr_init(t),m):R(e,_)}function K(e){var t=G(e);return t===m&&function(e){e.window_size=2*e.w_size,D(e.head),e.max_lazy_match=h[e.level].max_lazy,e.good_match=h[e.level].good_length,e.nice_match=h[e.level].nice_length,e.max_chain_length=h[e.level].max_chain,e.strstart=0,e.block_start=0,e.lookahead=0,e.insert=0,e.match_length=e.prev_length=x-1,e.match_available=0,e.ins_h=0}(e.state),t}function Y(e,t,r,n,i,s){if(!e)return _;var a=1;if(t===g&&(t=6),n<0?(a=0,n=-n):15<n&&(a=2,n-=16),i<1||y<i||r!==v||n<8||15<n||t<0||9<t||s<0||b<s)return R(e,_);8===n&&(n=9);var o=new H;return(e.state=o).strm=e,o.wrap=a,o.gzhead=null,o.w_bits=n,o.w_size=1<<o.w_bits,o.w_mask=o.w_size-1,o.hash_bits=i+7,o.hash_size=1<<o.hash_bits,o.hash_mask=o.hash_size-1,o.hash_shift=~~((o.hash_bits+x-1)/x),o.window=new c.Buf8(2*o.w_size),o.head=new c.Buf16(o.hash_size),o.prev=new c.Buf16(o.w_size),o.lit_bufsize=1<<i+6,o.pending_buf_size=4*o.lit_bufsize,o.pending_buf=new c.Buf8(o.pending_buf_size),o.d_buf=1*o.lit_bufsize,o.l_buf=3*o.lit_bufsize,o.level=t,o.strategy=s,o.method=r,K(e)}h=[new M(0,0,0,0,function(e,t){var r=65535;for(r>e.pending_buf_size-5&&(r=e.pending_buf_size-5);;){if(e.lookahead<=1){if(j(e),0===e.lookahead&&t===l)return A;if(0===e.lookahead)break}e.strstart+=e.lookahead,e.lookahead=0;var n=e.block_start+r;if((0===e.strstart||e.strstart>=n)&&(e.lookahead=e.strstart-n,e.strstart=n,N(e,!1),0===e.strm.avail_out))return A;if(e.strstart-e.block_start>=e.w_size-z&&(N(e,!1),0===e.strm.avail_out))return A}return e.insert=0,t===f?(N(e,!0),0===e.strm.avail_out?O:B):(e.strstart>e.block_start&&(N(e,!1),e.strm.avail_out),A)}),new M(4,4,8,4,Z),new M(4,5,16,8,Z),new M(4,6,32,32,Z),new M(4,4,16,16,W),new M(8,16,32,32,W),new M(8,16,128,128,W),new M(8,32,128,256,W),new M(32,128,258,1024,W),new M(32,258,258,4096,W)],r.deflateInit=function(e,t){return Y(e,t,v,15,8,0)},r.deflateInit2=Y,r.deflateReset=K,r.deflateResetKeep=G,r.deflateSetHeader=function(e,t){return e&&e.state?2!==e.state.wrap?_:(e.state.gzhead=t,m):_},r.deflate=function(e,t){var r,n,i,s;if(!e||!e.state||5<t||t<0)return e?R(e,_):_;if(n=e.state,!e.output||!e.input&&0!==e.avail_in||666===n.status&&t!==f)return R(e,0===e.avail_out?-5:_);if(n.strm=e,r=n.last_flush,n.last_flush=t,n.status===C)if(2===n.wrap)e.adler=0,U(n,31),U(n,139),U(n,8),n.gzhead?(U(n,(n.gzhead.text?1:0)+(n.gzhead.hcrc?2:0)+(n.gzhead.extra?4:0)+(n.gzhead.name?8:0)+(n.gzhead.comment?16:0)),U(n,255&n.gzhead.time),U(n,n.gzhead.time>>8&255),U(n,n.gzhead.time>>16&255),U(n,n.gzhead.time>>24&255),U(n,9===n.level?2:2<=n.strategy||n.level<2?4:0),U(n,255&n.gzhead.os),n.gzhead.extra&&n.gzhead.extra.length&&(U(n,255&n.gzhead.extra.length),U(n,n.gzhead.extra.length>>8&255)),n.gzhead.hcrc&&(e.adler=p(e.adler,n.pending_buf,n.pending,0)),n.gzindex=0,n.status=69):(U(n,0),U(n,0),U(n,0),U(n,0),U(n,0),U(n,9===n.level?2:2<=n.strategy||n.level<2?4:0),U(n,3),n.status=E);else{var a=v+(n.w_bits-8<<4)<<8;a|=(2<=n.strategy||n.level<2?0:n.level<6?1:6===n.level?2:3)<<6,0!==n.strstart&&(a|=32),a+=31-a%31,n.status=E,P(n,a),0!==n.strstart&&(P(n,e.adler>>>16),P(n,65535&e.adler)),e.adler=1}if(69===n.status)if(n.gzhead.extra){for(i=n.pending;n.gzindex<(65535&n.gzhead.extra.length)&&(n.pending!==n.pending_buf_size||(n.gzhead.hcrc&&n.pending>i&&(e.adler=p(e.adler,n.pending_buf,n.pending-i,i)),F(e),i=n.pending,n.pending!==n.pending_buf_size));)U(n,255&n.gzhead.extra[n.gzindex]),n.gzindex++;n.gzhead.hcrc&&n.pending>i&&(e.adler=p(e.adler,n.pending_buf,n.pending-i,i)),n.gzindex===n.gzhead.extra.length&&(n.gzindex=0,n.status=73)}else n.status=73;if(73===n.status)if(n.gzhead.name){i=n.pending;do{if(n.pending===n.pending_buf_size&&(n.gzhead.hcrc&&n.pending>i&&(e.adler=p(e.adler,n.pending_buf,n.pending-i,i)),F(e),i=n.pending,n.pending===n.pending_buf_size)){s=1;break}s=n.gzindex<n.gzhead.name.length?255&n.gzhead.name.charCodeAt(n.gzindex++):0,U(n,s)}while(0!==s);n.gzhead.hcrc&&n.pending>i&&(e.adler=p(e.adler,n.pending_buf,n.pending-i,i)),0===s&&(n.gzindex=0,n.status=91)}else n.status=91;if(91===n.status)if(n.gzhead.comment){i=n.pending;do{if(n.pending===n.pending_buf_size&&(n.gzhead.hcrc&&n.pending>i&&(e.adler=p(e.adler,n.pending_buf,n.pending-i,i)),F(e),i=n.pending,n.pending===n.pending_buf_size)){s=1;break}s=n.gzindex<n.gzhead.comment.length?255&n.gzhead.comment.charCodeAt(n.gzindex++):0,U(n,s)}while(0!==s);n.gzhead.hcrc&&n.pending>i&&(e.adler=p(e.adler,n.pending_buf,n.pending-i,i)),0===s&&(n.status=103)}else n.status=103;if(103===n.status&&(n.gzhead.hcrc?(n.pending+2>n.pending_buf_size&&F(e),n.pending+2<=n.pending_buf_size&&(U(n,255&e.adler),U(n,e.adler>>8&255),e.adler=0,n.status=E)):n.status=E),0!==n.pending){if(F(e),0===e.avail_out)return n.last_flush=-1,m}else if(0===e.avail_in&&T(t)<=T(r)&&t!==f)return R(e,-5);if(666===n.status&&0!==e.avail_in)return R(e,-5);if(0!==e.avail_in||0!==n.lookahead||t!==l&&666!==n.status){var o=2===n.strategy?function(e,t){for(var r;;){if(0===e.lookahead&&(j(e),0===e.lookahead)){if(t===l)return A;break}if(e.match_length=0,r=u._tr_tally(e,0,e.window[e.strstart]),e.lookahead--,e.strstart++,r&&(N(e,!1),0===e.strm.avail_out))return A}return e.insert=0,t===f?(N(e,!0),0===e.strm.avail_out?O:B):e.last_lit&&(N(e,!1),0===e.strm.avail_out)?A:I}(n,t):3===n.strategy?function(e,t){for(var r,n,i,s,a=e.window;;){if(e.lookahead<=S){if(j(e),e.lookahead<=S&&t===l)return A;if(0===e.lookahead)break}if(e.match_length=0,e.lookahead>=x&&0<e.strstart&&(n=a[i=e.strstart-1])===a[++i]&&n===a[++i]&&n===a[++i]){s=e.strstart+S;do{}while(n===a[++i]&&n===a[++i]&&n===a[++i]&&n===a[++i]&&n===a[++i]&&n===a[++i]&&n===a[++i]&&n===a[++i]&&i<s);e.match_length=S-(s-i),e.match_length>e.lookahead&&(e.match_length=e.lookahead)}if(e.match_length>=x?(r=u._tr_tally(e,1,e.match_length-x),e.lookahead-=e.match_length,e.strstart+=e.match_length,e.match_length=0):(r=u._tr_tally(e,0,e.window[e.strstart]),e.lookahead--,e.strstart++),r&&(N(e,!1),0===e.strm.avail_out))return A}return e.insert=0,t===f?(N(e,!0),0===e.strm.avail_out?O:B):e.last_lit&&(N(e,!1),0===e.strm.avail_out)?A:I}(n,t):h[n.level].func(n,t);if(o!==O&&o!==B||(n.status=666),o===A||o===O)return 0===e.avail_out&&(n.last_flush=-1),m;if(o===I&&(1===t?u._tr_align(n):5!==t&&(u._tr_stored_block(n,0,0,!1),3===t&&(D(n.head),0===n.lookahead&&(n.strstart=0,n.block_start=0,n.insert=0))),F(e),0===e.avail_out))return n.last_flush=-1,m}return t!==f?m:n.wrap<=0?1:(2===n.wrap?(U(n,255&e.adler),U(n,e.adler>>8&255),U(n,e.adler>>16&255),U(n,e.adler>>24&255),U(n,255&e.total_in),U(n,e.total_in>>8&255),U(n,e.total_in>>16&255),U(n,e.total_in>>24&255)):(P(n,e.adler>>>16),P(n,65535&e.adler)),F(e),0<n.wrap&&(n.wrap=-n.wrap),0!==n.pending?m:1)},r.deflateEnd=function(e){var t;return e&&e.state?(t=e.state.status)!==C&&69!==t&&73!==t&&91!==t&&103!==t&&t!==E&&666!==t?R(e,_):(e.state=null,t===E?R(e,-3):m):_},r.deflateSetDictionary=function(e,t){var r,n,i,s,a,o,h,u,l=t.length;if(!e||!e.state)return _;if(2===(s=(r=e.state).wrap)||1===s&&r.status!==C||r.lookahead)return _;for(1===s&&(e.adler=d(e.adler,t,l,0)),r.wrap=0,l>=r.w_size&&(0===s&&(D(r.head),r.strstart=0,r.block_start=0,r.insert=0),u=new c.Buf8(r.w_size),c.arraySet(u,t,l-r.w_size,r.w_size,0),t=u,l=r.w_size),a=e.avail_in,o=e.next_in,h=e.input,e.avail_in=l,e.next_in=0,e.input=t,j(r);r.lookahead>=x;){for(n=r.strstart,i=r.lookahead-(x-1);r.ins_h=(r.ins_h<<r.hash_shift^r.window[n+x-1])&r.hash_mask,r.prev[n&r.w_mask]=r.head[r.ins_h],r.head[r.ins_h]=n,n++,--i;);r.strstart=n,r.lookahead=x-1,j(r)}return r.strstart+=r.lookahead,r.block_start=r.strstart,r.insert=r.lookahead,r.lookahead=0,r.match_length=r.prev_length=x-1,r.match_available=0,e.next_in=o,e.input=h,e.avail_in=a,r.wrap=s,m},r.deflateInfo="pako deflate (from Nodeca project)"},{"../utils/common":41,"./adler32":43,"./crc32":45,"./messages":51,"./trees":52}],47:[function(e,t,r){"use strict";t.exports=function(){this.text=0,this.time=0,this.xflags=0,this.os=0,this.extra=null,this.extra_len=0,this.name="",this.comment="",this.hcrc=0,this.done=!1}},{}],48:[function(e,t,r){"use strict";t.exports=function(e,t){var r,n,i,s,a,o,h,u,l,f,c,d,p,m,_,g,b,v,y,w,k,x,S,z,C;r=e.state,n=e.next_in,z=e.input,i=n+(e.avail_in-5),s=e.next_out,C=e.output,a=s-(t-e.avail_out),o=s+(e.avail_out-257),h=r.dmax,u=r.wsize,l=r.whave,f=r.wnext,c=r.window,d=r.hold,p=r.bits,m=r.lencode,_=r.distcode,g=(1<<r.lenbits)-1,b=(1<<r.distbits)-1;e:do{p<15&&(d+=z[n++]<<p,p+=8,d+=z[n++]<<p,p+=8),v=m[d&g];t:for(;;){if(d>>>=y=v>>>24,p-=y,0===(y=v>>>16&255))C[s++]=65535&v;else{if(!(16&y)){if(0==(64&y)){v=m[(65535&v)+(d&(1<<y)-1)];continue t}if(32&y){r.mode=12;break e}e.msg="invalid literal/length code",r.mode=30;break e}w=65535&v,(y&=15)&&(p<y&&(d+=z[n++]<<p,p+=8),w+=d&(1<<y)-1,d>>>=y,p-=y),p<15&&(d+=z[n++]<<p,p+=8,d+=z[n++]<<p,p+=8),v=_[d&b];r:for(;;){if(d>>>=y=v>>>24,p-=y,!(16&(y=v>>>16&255))){if(0==(64&y)){v=_[(65535&v)+(d&(1<<y)-1)];continue r}e.msg="invalid distance code",r.mode=30;break e}if(k=65535&v,p<(y&=15)&&(d+=z[n++]<<p,(p+=8)<y&&(d+=z[n++]<<p,p+=8)),h<(k+=d&(1<<y)-1)){e.msg="invalid distance too far back",r.mode=30;break e}if(d>>>=y,p-=y,(y=s-a)<k){if(l<(y=k-y)&&r.sane){e.msg="invalid distance too far back",r.mode=30;break e}if(S=c,(x=0)===f){if(x+=u-y,y<w){for(w-=y;C[s++]=c[x++],--y;);x=s-k,S=C}}else if(f<y){if(x+=u+f-y,(y-=f)<w){for(w-=y;C[s++]=c[x++],--y;);if(x=0,f<w){for(w-=y=f;C[s++]=c[x++],--y;);x=s-k,S=C}}}else if(x+=f-y,y<w){for(w-=y;C[s++]=c[x++],--y;);x=s-k,S=C}for(;2<w;)C[s++]=S[x++],C[s++]=S[x++],C[s++]=S[x++],w-=3;w&&(C[s++]=S[x++],1<w&&(C[s++]=S[x++]))}else{for(x=s-k;C[s++]=C[x++],C[s++]=C[x++],C[s++]=C[x++],2<(w-=3););w&&(C[s++]=C[x++],1<w&&(C[s++]=C[x++]))}break}}break}}while(n<i&&s<o);n-=w=p>>3,d&=(1<<(p-=w<<3))-1,e.next_in=n,e.next_out=s,e.avail_in=n<i?i-n+5:5-(n-i),e.avail_out=s<o?o-s+257:257-(s-o),r.hold=d,r.bits=p}},{}],49:[function(e,t,r){"use strict";var I=e("../utils/common"),O=e("./adler32"),B=e("./crc32"),R=e("./inffast"),T=e("./inftrees"),D=1,F=2,N=0,U=-2,P=1,n=852,i=592;function L(e){return(e>>>24&255)+(e>>>8&65280)+((65280&e)<<8)+((255&e)<<24)}function s(){this.mode=0,this.last=!1,this.wrap=0,this.havedict=!1,this.flags=0,this.dmax=0,this.check=0,this.total=0,this.head=null,this.wbits=0,this.wsize=0,this.whave=0,this.wnext=0,this.window=null,this.hold=0,this.bits=0,this.length=0,this.offset=0,this.extra=0,this.lencode=null,this.distcode=null,this.lenbits=0,this.distbits=0,this.ncode=0,this.nlen=0,this.ndist=0,this.have=0,this.next=null,this.lens=new I.Buf16(320),this.work=new I.Buf16(288),this.lendyn=null,this.distdyn=null,this.sane=0,this.back=0,this.was=0}function a(e){var t;return e&&e.state?(t=e.state,e.total_in=e.total_out=t.total=0,e.msg="",t.wrap&&(e.adler=1&t.wrap),t.mode=P,t.last=0,t.havedict=0,t.dmax=32768,t.head=null,t.hold=0,t.bits=0,t.lencode=t.lendyn=new I.Buf32(n),t.distcode=t.distdyn=new I.Buf32(i),t.sane=1,t.back=-1,N):U}function o(e){var t;return e&&e.state?((t=e.state).wsize=0,t.whave=0,t.wnext=0,a(e)):U}function h(e,t){var r,n;return e&&e.state?(n=e.state,t<0?(r=0,t=-t):(r=1+(t>>4),t<48&&(t&=15)),t&&(t<8||15<t)?U:(null!==n.window&&n.wbits!==t&&(n.window=null),n.wrap=r,n.wbits=t,o(e))):U}function u(e,t){var r,n;return e?(n=new s,(e.state=n).window=null,(r=h(e,t))!==N&&(e.state=null),r):U}var l,f,c=!0;function j(e){if(c){var t;for(l=new I.Buf32(512),f=new I.Buf32(32),t=0;t<144;)e.lens[t++]=8;for(;t<256;)e.lens[t++]=9;for(;t<280;)e.lens[t++]=7;for(;t<288;)e.lens[t++]=8;for(T(D,e.lens,0,288,l,0,e.work,{bits:9}),t=0;t<32;)e.lens[t++]=5;T(F,e.lens,0,32,f,0,e.work,{bits:5}),c=!1}e.lencode=l,e.lenbits=9,e.distcode=f,e.distbits=5}function Z(e,t,r,n){var i,s=e.state;return null===s.window&&(s.wsize=1<<s.wbits,s.wnext=0,s.whave=0,s.window=new I.Buf8(s.wsize)),n>=s.wsize?(I.arraySet(s.window,t,r-s.wsize,s.wsize,0),s.wnext=0,s.whave=s.wsize):(n<(i=s.wsize-s.wnext)&&(i=n),I.arraySet(s.window,t,r-n,i,s.wnext),(n-=i)?(I.arraySet(s.window,t,r-n,n,0),s.wnext=n,s.whave=s.wsize):(s.wnext+=i,s.wnext===s.wsize&&(s.wnext=0),s.whave<s.wsize&&(s.whave+=i))),0}r.inflateReset=o,r.inflateReset2=h,r.inflateResetKeep=a,r.inflateInit=function(e){return u(e,15)},r.inflateInit2=u,r.inflate=function(e,t){var r,n,i,s,a,o,h,u,l,f,c,d,p,m,_,g,b,v,y,w,k,x,S,z,C=0,E=new I.Buf8(4),A=[16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15];if(!e||!e.state||!e.output||!e.input&&0!==e.avail_in)return U;12===(r=e.state).mode&&(r.mode=13),a=e.next_out,i=e.output,h=e.avail_out,s=e.next_in,n=e.input,o=e.avail_in,u=r.hold,l=r.bits,f=o,c=h,x=N;e:for(;;)switch(r.mode){case P:if(0===r.wrap){r.mode=13;break}for(;l<16;){if(0===o)break e;o--,u+=n[s++]<<l,l+=8}if(2&r.wrap&&35615===u){E[r.check=0]=255&u,E[1]=u>>>8&255,r.check=B(r.check,E,2,0),l=u=0,r.mode=2;break}if(r.flags=0,r.head&&(r.head.done=!1),!(1&r.wrap)||(((255&u)<<8)+(u>>8))%31){e.msg="incorrect header check",r.mode=30;break}if(8!=(15&u)){e.msg="unknown compression method",r.mode=30;break}if(l-=4,k=8+(15&(u>>>=4)),0===r.wbits)r.wbits=k;else if(k>r.wbits){e.msg="invalid window size",r.mode=30;break}r.dmax=1<<k,e.adler=r.check=1,r.mode=512&u?10:12,l=u=0;break;case 2:for(;l<16;){if(0===o)break e;o--,u+=n[s++]<<l,l+=8}if(r.flags=u,8!=(255&r.flags)){e.msg="unknown compression method",r.mode=30;break}if(57344&r.flags){e.msg="unknown header flags set",r.mode=30;break}r.head&&(r.head.text=u>>8&1),512&r.flags&&(E[0]=255&u,E[1]=u>>>8&255,r.check=B(r.check,E,2,0)),l=u=0,r.mode=3;case 3:for(;l<32;){if(0===o)break e;o--,u+=n[s++]<<l,l+=8}r.head&&(r.head.time=u),512&r.flags&&(E[0]=255&u,E[1]=u>>>8&255,E[2]=u>>>16&255,E[3]=u>>>24&255,r.check=B(r.check,E,4,0)),l=u=0,r.mode=4;case 4:for(;l<16;){if(0===o)break e;o--,u+=n[s++]<<l,l+=8}r.head&&(r.head.xflags=255&u,r.head.os=u>>8),512&r.flags&&(E[0]=255&u,E[1]=u>>>8&255,r.check=B(r.check,E,2,0)),l=u=0,r.mode=5;case 5:if(1024&r.flags){for(;l<16;){if(0===o)break e;o--,u+=n[s++]<<l,l+=8}r.length=u,r.head&&(r.head.extra_len=u),512&r.flags&&(E[0]=255&u,E[1]=u>>>8&255,r.check=B(r.check,E,2,0)),l=u=0}else r.head&&(r.head.extra=null);r.mode=6;case 6:if(1024&r.flags&&(o<(d=r.length)&&(d=o),d&&(r.head&&(k=r.head.extra_len-r.length,r.head.extra||(r.head.extra=new Array(r.head.extra_len)),I.arraySet(r.head.extra,n,s,d,k)),512&r.flags&&(r.check=B(r.check,n,d,s)),o-=d,s+=d,r.length-=d),r.length))break e;r.length=0,r.mode=7;case 7:if(2048&r.flags){if(0===o)break e;for(d=0;k=n[s+d++],r.head&&k&&r.length<65536&&(r.head.name+=String.fromCharCode(k)),k&&d<o;);if(512&r.flags&&(r.check=B(r.check,n,d,s)),o-=d,s+=d,k)break e}else r.head&&(r.head.name=null);r.length=0,r.mode=8;case 8:if(4096&r.flags){if(0===o)break e;for(d=0;k=n[s+d++],r.head&&k&&r.length<65536&&(r.head.comment+=String.fromCharCode(k)),k&&d<o;);if(512&r.flags&&(r.check=B(r.check,n,d,s)),o-=d,s+=d,k)break e}else r.head&&(r.head.comment=null);r.mode=9;case 9:if(512&r.flags){for(;l<16;){if(0===o)break e;o--,u+=n[s++]<<l,l+=8}if(u!==(65535&r.check)){e.msg="header crc mismatch",r.mode=30;break}l=u=0}r.head&&(r.head.hcrc=r.flags>>9&1,r.head.done=!0),e.adler=r.check=0,r.mode=12;break;case 10:for(;l<32;){if(0===o)break e;o--,u+=n[s++]<<l,l+=8}e.adler=r.check=L(u),l=u=0,r.mode=11;case 11:if(0===r.havedict)return e.next_out=a,e.avail_out=h,e.next_in=s,e.avail_in=o,r.hold=u,r.bits=l,2;e.adler=r.check=1,r.mode=12;case 12:if(5===t||6===t)break e;case 13:if(r.last){u>>>=7&l,l-=7&l,r.mode=27;break}for(;l<3;){if(0===o)break e;o--,u+=n[s++]<<l,l+=8}switch(r.last=1&u,l-=1,3&(u>>>=1)){case 0:r.mode=14;break;case 1:if(j(r),r.mode=20,6!==t)break;u>>>=2,l-=2;break e;case 2:r.mode=17;break;case 3:e.msg="invalid block type",r.mode=30}u>>>=2,l-=2;break;case 14:for(u>>>=7&l,l-=7&l;l<32;){if(0===o)break e;o--,u+=n[s++]<<l,l+=8}if((65535&u)!=(u>>>16^65535)){e.msg="invalid stored block lengths",r.mode=30;break}if(r.length=65535&u,l=u=0,r.mode=15,6===t)break e;case 15:r.mode=16;case 16:if(d=r.length){if(o<d&&(d=o),h<d&&(d=h),0===d)break e;I.arraySet(i,n,s,d,a),o-=d,s+=d,h-=d,a+=d,r.length-=d;break}r.mode=12;break;case 17:for(;l<14;){if(0===o)break e;o--,u+=n[s++]<<l,l+=8}if(r.nlen=257+(31&u),u>>>=5,l-=5,r.ndist=1+(31&u),u>>>=5,l-=5,r.ncode=4+(15&u),u>>>=4,l-=4,286<r.nlen||30<r.ndist){e.msg="too many length or distance symbols",r.mode=30;break}r.have=0,r.mode=18;case 18:for(;r.have<r.ncode;){for(;l<3;){if(0===o)break e;o--,u+=n[s++]<<l,l+=8}r.lens[A[r.have++]]=7&u,u>>>=3,l-=3}for(;r.have<19;)r.lens[A[r.have++]]=0;if(r.lencode=r.lendyn,r.lenbits=7,S={bits:r.lenbits},x=T(0,r.lens,0,19,r.lencode,0,r.work,S),r.lenbits=S.bits,x){e.msg="invalid code lengths set",r.mode=30;break}r.have=0,r.mode=19;case 19:for(;r.have<r.nlen+r.ndist;){for(;g=(C=r.lencode[u&(1<<r.lenbits)-1])>>>16&255,b=65535&C,!((_=C>>>24)<=l);){if(0===o)break e;o--,u+=n[s++]<<l,l+=8}if(b<16)u>>>=_,l-=_,r.lens[r.have++]=b;else{if(16===b){for(z=_+2;l<z;){if(0===o)break e;o--,u+=n[s++]<<l,l+=8}if(u>>>=_,l-=_,0===r.have){e.msg="invalid bit length repeat",r.mode=30;break}k=r.lens[r.have-1],d=3+(3&u),u>>>=2,l-=2}else if(17===b){for(z=_+3;l<z;){if(0===o)break e;o--,u+=n[s++]<<l,l+=8}l-=_,k=0,d=3+(7&(u>>>=_)),u>>>=3,l-=3}else{for(z=_+7;l<z;){if(0===o)break e;o--,u+=n[s++]<<l,l+=8}l-=_,k=0,d=11+(127&(u>>>=_)),u>>>=7,l-=7}if(r.have+d>r.nlen+r.ndist){e.msg="invalid bit length repeat",r.mode=30;break}for(;d--;)r.lens[r.have++]=k}}if(30===r.mode)break;if(0===r.lens[256]){e.msg="invalid code -- missing end-of-block",r.mode=30;break}if(r.lenbits=9,S={bits:r.lenbits},x=T(D,r.lens,0,r.nlen,r.lencode,0,r.work,S),r.lenbits=S.bits,x){e.msg="invalid literal/lengths set",r.mode=30;break}if(r.distbits=6,r.distcode=r.distdyn,S={bits:r.distbits},x=T(F,r.lens,r.nlen,r.ndist,r.distcode,0,r.work,S),r.distbits=S.bits,x){e.msg="invalid distances set",r.mode=30;break}if(r.mode=20,6===t)break e;case 20:r.mode=21;case 21:if(6<=o&&258<=h){e.next_out=a,e.avail_out=h,e.next_in=s,e.avail_in=o,r.hold=u,r.bits=l,R(e,c),a=e.next_out,i=e.output,h=e.avail_out,s=e.next_in,n=e.input,o=e.avail_in,u=r.hold,l=r.bits,12===r.mode&&(r.back=-1);break}for(r.back=0;g=(C=r.lencode[u&(1<<r.lenbits)-1])>>>16&255,b=65535&C,!((_=C>>>24)<=l);){if(0===o)break e;o--,u+=n[s++]<<l,l+=8}if(g&&0==(240&g)){for(v=_,y=g,w=b;g=(C=r.lencode[w+((u&(1<<v+y)-1)>>v)])>>>16&255,b=65535&C,!(v+(_=C>>>24)<=l);){if(0===o)break e;o--,u+=n[s++]<<l,l+=8}u>>>=v,l-=v,r.back+=v}if(u>>>=_,l-=_,r.back+=_,r.length=b,0===g){r.mode=26;break}if(32&g){r.back=-1,r.mode=12;break}if(64&g){e.msg="invalid literal/length code",r.mode=30;break}r.extra=15&g,r.mode=22;case 22:if(r.extra){for(z=r.extra;l<z;){if(0===o)break e;o--,u+=n[s++]<<l,l+=8}r.length+=u&(1<<r.extra)-1,u>>>=r.extra,l-=r.extra,r.back+=r.extra}r.was=r.length,r.mode=23;case 23:for(;g=(C=r.distcode[u&(1<<r.distbits)-1])>>>16&255,b=65535&C,!((_=C>>>24)<=l);){if(0===o)break e;o--,u+=n[s++]<<l,l+=8}if(0==(240&g)){for(v=_,y=g,w=b;g=(C=r.distcode[w+((u&(1<<v+y)-1)>>v)])>>>16&255,b=65535&C,!(v+(_=C>>>24)<=l);){if(0===o)break e;o--,u+=n[s++]<<l,l+=8}u>>>=v,l-=v,r.back+=v}if(u>>>=_,l-=_,r.back+=_,64&g){e.msg="invalid distance code",r.mode=30;break}r.offset=b,r.extra=15&g,r.mode=24;case 24:if(r.extra){for(z=r.extra;l<z;){if(0===o)break e;o--,u+=n[s++]<<l,l+=8}r.offset+=u&(1<<r.extra)-1,u>>>=r.extra,l-=r.extra,r.back+=r.extra}if(r.offset>r.dmax){e.msg="invalid distance too far back",r.mode=30;break}r.mode=25;case 25:if(0===h)break e;if(d=c-h,r.offset>d){if((d=r.offset-d)>r.whave&&r.sane){e.msg="invalid distance too far back",r.mode=30;break}p=d>r.wnext?(d-=r.wnext,r.wsize-d):r.wnext-d,d>r.length&&(d=r.length),m=r.window}else m=i,p=a-r.offset,d=r.length;for(h<d&&(d=h),h-=d,r.length-=d;i[a++]=m[p++],--d;);0===r.length&&(r.mode=21);break;case 26:if(0===h)break e;i[a++]=r.length,h--,r.mode=21;break;case 27:if(r.wrap){for(;l<32;){if(0===o)break e;o--,u|=n[s++]<<l,l+=8}if(c-=h,e.total_out+=c,r.total+=c,c&&(e.adler=r.check=r.flags?B(r.check,i,c,a-c):O(r.check,i,c,a-c)),c=h,(r.flags?u:L(u))!==r.check){e.msg="incorrect data check",r.mode=30;break}l=u=0}r.mode=28;case 28:if(r.wrap&&r.flags){for(;l<32;){if(0===o)break e;o--,u+=n[s++]<<l,l+=8}if(u!==(4294967295&r.total)){e.msg="incorrect length check",r.mode=30;break}l=u=0}r.mode=29;case 29:x=1;break e;case 30:x=-3;break e;case 31:return-4;case 32:default:return U}return e.next_out=a,e.avail_out=h,e.next_in=s,e.avail_in=o,r.hold=u,r.bits=l,(r.wsize||c!==e.avail_out&&r.mode<30&&(r.mode<27||4!==t))&&Z(e,e.output,e.next_out,c-e.avail_out)?(r.mode=31,-4):(f-=e.avail_in,c-=e.avail_out,e.total_in+=f,e.total_out+=c,r.total+=c,r.wrap&&c&&(e.adler=r.check=r.flags?B(r.check,i,c,e.next_out-c):O(r.check,i,c,e.next_out-c)),e.data_type=r.bits+(r.last?64:0)+(12===r.mode?128:0)+(20===r.mode||15===r.mode?256:0),(0==f&&0===c||4===t)&&x===N&&(x=-5),x)},r.inflateEnd=function(e){if(!e||!e.state)return U;var t=e.state;return t.window&&(t.window=null),e.state=null,N},r.inflateGetHeader=function(e,t){var r;return e&&e.state?0==(2&(r=e.state).wrap)?U:((r.head=t).done=!1,N):U},r.inflateSetDictionary=function(e,t){var r,n=t.length;return e&&e.state?0!==(r=e.state).wrap&&11!==r.mode?U:11===r.mode&&O(1,t,n,0)!==r.check?-3:Z(e,t,n,n)?(r.mode=31,-4):(r.havedict=1,N):U},r.inflateInfo="pako inflate (from Nodeca project)"},{"../utils/common":41,"./adler32":43,"./crc32":45,"./inffast":48,"./inftrees":50}],50:[function(e,t,r){"use strict";var D=e("../utils/common"),F=[3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,115,131,163,195,227,258,0,0],N=[16,16,16,16,16,16,16,16,17,17,17,17,18,18,18,18,19,19,19,19,20,20,20,20,21,21,21,21,16,72,78],U=[1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769,1025,1537,2049,3073,4097,6145,8193,12289,16385,24577,0,0],P=[16,16,16,16,17,17,18,18,19,19,20,20,21,21,22,22,23,23,24,24,25,25,26,26,27,27,28,28,29,29,64,64];t.exports=function(e,t,r,n,i,s,a,o){var h,u,l,f,c,d,p,m,_,g=o.bits,b=0,v=0,y=0,w=0,k=0,x=0,S=0,z=0,C=0,E=0,A=null,I=0,O=new D.Buf16(16),B=new D.Buf16(16),R=null,T=0;for(b=0;b<=15;b++)O[b]=0;for(v=0;v<n;v++)O[t[r+v]]++;for(k=g,w=15;1<=w&&0===O[w];w--);if(w<k&&(k=w),0===w)return i[s++]=20971520,i[s++]=20971520,o.bits=1,0;for(y=1;y<w&&0===O[y];y++);for(k<y&&(k=y),b=z=1;b<=15;b++)if(z<<=1,(z-=O[b])<0)return-1;if(0<z&&(0===e||1!==w))return-1;for(B[1]=0,b=1;b<15;b++)B[b+1]=B[b]+O[b];for(v=0;v<n;v++)0!==t[r+v]&&(a[B[t[r+v]]++]=v);if(d=0===e?(A=R=a,19):1===e?(A=F,I-=257,R=N,T-=257,256):(A=U,R=P,-1),b=y,c=s,S=v=E=0,l=-1,f=(C=1<<(x=k))-1,1===e&&852<C||2===e&&592<C)return 1;for(;;){for(p=b-S,_=a[v]<d?(m=0,a[v]):a[v]>d?(m=R[T+a[v]],A[I+a[v]]):(m=96,0),h=1<<b-S,y=u=1<<x;i[c+(E>>S)+(u-=h)]=p<<24|m<<16|_|0,0!==u;);for(h=1<<b-1;E&h;)h>>=1;if(0!==h?(E&=h-1,E+=h):E=0,v++,0==--O[b]){if(b===w)break;b=t[r+a[v]]}if(k<b&&(E&f)!==l){for(0===S&&(S=k),c+=y,z=1<<(x=b-S);x+S<w&&!((z-=O[x+S])<=0);)x++,z<<=1;if(C+=1<<x,1===e&&852<C||2===e&&592<C)return 1;i[l=E&f]=k<<24|x<<16|c-s|0}}return 0!==E&&(i[c+E]=b-S<<24|64<<16|0),o.bits=k,0}},{"../utils/common":41}],51:[function(e,t,r){"use strict";t.exports={2:"need dictionary",1:"stream end",0:"","-1":"file error","-2":"stream error","-3":"data error","-4":"insufficient memory","-5":"buffer error","-6":"incompatible version"}},{}],52:[function(e,t,r){"use strict";var i=e("../utils/common"),o=0,h=1;function n(e){for(var t=e.length;0<=--t;)e[t]=0}var s=0,a=29,u=256,l=u+1+a,f=30,c=19,_=2*l+1,g=15,d=16,p=7,m=256,b=16,v=17,y=18,w=[0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0],k=[0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13],x=[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,3,7],S=[16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15],z=new Array(2*(l+2));n(z);var C=new Array(2*f);n(C);var E=new Array(512);n(E);var A=new Array(256);n(A);var I=new Array(a);n(I);var O,B,R,T=new Array(f);function D(e,t,r,n,i){this.static_tree=e,this.extra_bits=t,this.extra_base=r,this.elems=n,this.max_length=i,this.has_stree=e&&e.length}function F(e,t){this.dyn_tree=e,this.max_code=0,this.stat_desc=t}function N(e){return e<256?E[e]:E[256+(e>>>7)]}function U(e,t){e.pending_buf[e.pending++]=255&t,e.pending_buf[e.pending++]=t>>>8&255}function P(e,t,r){e.bi_valid>d-r?(e.bi_buf|=t<<e.bi_valid&65535,U(e,e.bi_buf),e.bi_buf=t>>d-e.bi_valid,e.bi_valid+=r-d):(e.bi_buf|=t<<e.bi_valid&65535,e.bi_valid+=r)}function L(e,t,r){P(e,r[2*t],r[2*t+1])}function j(e,t){for(var r=0;r|=1&e,e>>>=1,r<<=1,0<--t;);return r>>>1}function Z(e,t,r){var n,i,s=new Array(g+1),a=0;for(n=1;n<=g;n++)s[n]=a=a+r[n-1]<<1;for(i=0;i<=t;i++){var o=e[2*i+1];0!==o&&(e[2*i]=j(s[o]++,o))}}function W(e){var t;for(t=0;t<l;t++)e.dyn_ltree[2*t]=0;for(t=0;t<f;t++)e.dyn_dtree[2*t]=0;for(t=0;t<c;t++)e.bl_tree[2*t]=0;e.dyn_ltree[2*m]=1,e.opt_len=e.static_len=0,e.last_lit=e.matches=0}function M(e){8<e.bi_valid?U(e,e.bi_buf):0<e.bi_valid&&(e.pending_buf[e.pending++]=e.bi_buf),e.bi_buf=0,e.bi_valid=0}function H(e,t,r,n){var i=2*t,s=2*r;return e[i]<e[s]||e[i]===e[s]&&n[t]<=n[r]}function G(e,t,r){for(var n=e.heap[r],i=r<<1;i<=e.heap_len&&(i<e.heap_len&&H(t,e.heap[i+1],e.heap[i],e.depth)&&i++,!H(t,n,e.heap[i],e.depth));)e.heap[r]=e.heap[i],r=i,i<<=1;e.heap[r]=n}function K(e,t,r){var n,i,s,a,o=0;if(0!==e.last_lit)for(;n=e.pending_buf[e.d_buf+2*o]<<8|e.pending_buf[e.d_buf+2*o+1],i=e.pending_buf[e.l_buf+o],o++,0===n?L(e,i,t):(L(e,(s=A[i])+u+1,t),0!==(a=w[s])&&P(e,i-=I[s],a),L(e,s=N(--n),r),0!==(a=k[s])&&P(e,n-=T[s],a)),o<e.last_lit;);L(e,m,t)}function Y(e,t){var r,n,i,s=t.dyn_tree,a=t.stat_desc.static_tree,o=t.stat_desc.has_stree,h=t.stat_desc.elems,u=-1;for(e.heap_len=0,e.heap_max=_,r=0;r<h;r++)0!==s[2*r]?(e.heap[++e.heap_len]=u=r,e.depth[r]=0):s[2*r+1]=0;for(;e.heap_len<2;)s[2*(i=e.heap[++e.heap_len]=u<2?++u:0)]=1,e.depth[i]=0,e.opt_len--,o&&(e.static_len-=a[2*i+1]);for(t.max_code=u,r=e.heap_len>>1;1<=r;r--)G(e,s,r);for(i=h;r=e.heap[1],e.heap[1]=e.heap[e.heap_len--],G(e,s,1),n=e.heap[1],e.heap[--e.heap_max]=r,e.heap[--e.heap_max]=n,s[2*i]=s[2*r]+s[2*n],e.depth[i]=(e.depth[r]>=e.depth[n]?e.depth[r]:e.depth[n])+1,s[2*r+1]=s[2*n+1]=i,e.heap[1]=i++,G(e,s,1),2<=e.heap_len;);e.heap[--e.heap_max]=e.heap[1],function(e,t){var r,n,i,s,a,o,h=t.dyn_tree,u=t.max_code,l=t.stat_desc.static_tree,f=t.stat_desc.has_stree,c=t.stat_desc.extra_bits,d=t.stat_desc.extra_base,p=t.stat_desc.max_length,m=0;for(s=0;s<=g;s++)e.bl_count[s]=0;for(h[2*e.heap[e.heap_max]+1]=0,r=e.heap_max+1;r<_;r++)p<(s=h[2*h[2*(n=e.heap[r])+1]+1]+1)&&(s=p,m++),h[2*n+1]=s,u<n||(e.bl_count[s]++,a=0,d<=n&&(a=c[n-d]),o=h[2*n],e.opt_len+=o*(s+a),f&&(e.static_len+=o*(l[2*n+1]+a)));if(0!==m){do{for(s=p-1;0===e.bl_count[s];)s--;e.bl_count[s]--,e.bl_count[s+1]+=2,e.bl_count[p]--,m-=2}while(0<m);for(s=p;0!==s;s--)for(n=e.bl_count[s];0!==n;)u<(i=e.heap[--r])||(h[2*i+1]!==s&&(e.opt_len+=(s-h[2*i+1])*h[2*i],h[2*i+1]=s),n--)}}(e,t),Z(s,u,e.bl_count)}function X(e,t,r){var n,i,s=-1,a=t[1],o=0,h=7,u=4;for(0===a&&(h=138,u=3),t[2*(r+1)+1]=65535,n=0;n<=r;n++)i=a,a=t[2*(n+1)+1],++o<h&&i===a||(o<u?e.bl_tree[2*i]+=o:0!==i?(i!==s&&e.bl_tree[2*i]++,e.bl_tree[2*b]++):o<=10?e.bl_tree[2*v]++:e.bl_tree[2*y]++,s=i,u=(o=0)===a?(h=138,3):i===a?(h=6,3):(h=7,4))}function V(e,t,r){var n,i,s=-1,a=t[1],o=0,h=7,u=4;for(0===a&&(h=138,u=3),n=0;n<=r;n++)if(i=a,a=t[2*(n+1)+1],!(++o<h&&i===a)){if(o<u)for(;L(e,i,e.bl_tree),0!=--o;);else 0!==i?(i!==s&&(L(e,i,e.bl_tree),o--),L(e,b,e.bl_tree),P(e,o-3,2)):o<=10?(L(e,v,e.bl_tree),P(e,o-3,3)):(L(e,y,e.bl_tree),P(e,o-11,7));s=i,u=(o=0)===a?(h=138,3):i===a?(h=6,3):(h=7,4)}}n(T);var q=!1;function J(e,t,r,n){P(e,(s<<1)+(n?1:0),3),function(e,t,r,n){M(e),n&&(U(e,r),U(e,~r)),i.arraySet(e.pending_buf,e.window,t,r,e.pending),e.pending+=r}(e,t,r,!0)}r._tr_init=function(e){q||(function(){var e,t,r,n,i,s=new Array(g+1);for(n=r=0;n<a-1;n++)for(I[n]=r,e=0;e<1<<w[n];e++)A[r++]=n;for(A[r-1]=n,n=i=0;n<16;n++)for(T[n]=i,e=0;e<1<<k[n];e++)E[i++]=n;for(i>>=7;n<f;n++)for(T[n]=i<<7,e=0;e<1<<k[n]-7;e++)E[256+i++]=n;for(t=0;t<=g;t++)s[t]=0;for(e=0;e<=143;)z[2*e+1]=8,e++,s[8]++;for(;e<=255;)z[2*e+1]=9,e++,s[9]++;for(;e<=279;)z[2*e+1]=7,e++,s[7]++;for(;e<=287;)z[2*e+1]=8,e++,s[8]++;for(Z(z,l+1,s),e=0;e<f;e++)C[2*e+1]=5,C[2*e]=j(e,5);O=new D(z,w,u+1,l,g),B=new D(C,k,0,f,g),R=new D(new Array(0),x,0,c,p)}(),q=!0),e.l_desc=new F(e.dyn_ltree,O),e.d_desc=new F(e.dyn_dtree,B),e.bl_desc=new F(e.bl_tree,R),e.bi_buf=0,e.bi_valid=0,W(e)},r._tr_stored_block=J,r._tr_flush_block=function(e,t,r,n){var i,s,a=0;0<e.level?(2===e.strm.data_type&&(e.strm.data_type=function(e){var t,r=4093624447;for(t=0;t<=31;t++,r>>>=1)if(1&r&&0!==e.dyn_ltree[2*t])return o;if(0!==e.dyn_ltree[18]||0!==e.dyn_ltree[20]||0!==e.dyn_ltree[26])return h;for(t=32;t<u;t++)if(0!==e.dyn_ltree[2*t])return h;return o}(e)),Y(e,e.l_desc),Y(e,e.d_desc),a=function(e){var t;for(X(e,e.dyn_ltree,e.l_desc.max_code),X(e,e.dyn_dtree,e.d_desc.max_code),Y(e,e.bl_desc),t=c-1;3<=t&&0===e.bl_tree[2*S[t]+1];t--);return e.opt_len+=3*(t+1)+5+5+4,t}(e),i=e.opt_len+3+7>>>3,(s=e.static_len+3+7>>>3)<=i&&(i=s)):i=s=r+5,r+4<=i&&-1!==t?J(e,t,r,n):4===e.strategy||s===i?(P(e,2+(n?1:0),3),K(e,z,C)):(P(e,4+(n?1:0),3),function(e,t,r,n){var i;for(P(e,t-257,5),P(e,r-1,5),P(e,n-4,4),i=0;i<n;i++)P(e,e.bl_tree[2*S[i]+1],3);V(e,e.dyn_ltree,t-1),V(e,e.dyn_dtree,r-1)}(e,e.l_desc.max_code+1,e.d_desc.max_code+1,a+1),K(e,e.dyn_ltree,e.dyn_dtree)),W(e),n&&M(e)},r._tr_tally=function(e,t,r){return e.pending_buf[e.d_buf+2*e.last_lit]=t>>>8&255,e.pending_buf[e.d_buf+2*e.last_lit+1]=255&t,e.pending_buf[e.l_buf+e.last_lit]=255&r,e.last_lit++,0===t?e.dyn_ltree[2*r]++:(e.matches++,t--,e.dyn_ltree[2*(A[r]+u+1)]++,e.dyn_dtree[2*N(t)]++),e.last_lit===e.lit_bufsize-1},r._tr_align=function(e){P(e,2,3),L(e,m,z),function(e){16===e.bi_valid?(U(e,e.bi_buf),e.bi_buf=0,e.bi_valid=0):8<=e.bi_valid&&(e.pending_buf[e.pending++]=255&e.bi_buf,e.bi_buf>>=8,e.bi_valid-=8)}(e)}},{"../utils/common":41}],53:[function(e,t,r){"use strict";t.exports=function(){this.input=null,this.next_in=0,this.avail_in=0,this.total_in=0,this.output=null,this.next_out=0,this.avail_out=0,this.total_out=0,this.msg="",this.state=null,this.data_type=2,this.adler=0}},{}],54:[function(e,t,r){(function(e){!function(r,n){"use strict";if(!r.setImmediate){var i,s,t,a,o=1,h={},u=!1,l=r.document,e=Object.getPrototypeOf&&Object.getPrototypeOf(r);e=e&&e.setTimeout?e:r,i="[object process]"==={}.toString.call(r.process)?function(e){process.nextTick(function(){c(e)})}:function(){if(r.postMessage&&!r.importScripts){var e=!0,t=r.onmessage;return r.onmessage=function(){e=!1},r.postMessage("","*"),r.onmessage=t,e}}()?(a="setImmediate$"+Math.random()+"$",r.addEventListener?r.addEventListener("message",d,!1):r.attachEvent("onmessage",d),function(e){r.postMessage(a+e,"*")}):r.MessageChannel?((t=new MessageChannel).port1.onmessage=function(e){c(e.data)},function(e){t.port2.postMessage(e)}):l&&"onreadystatechange"in l.createElement("script")?(s=l.documentElement,function(e){var t=l.createElement("script");t.onreadystatechange=function(){c(e),t.onreadystatechange=null,s.removeChild(t),t=null},s.appendChild(t)}):function(e){setTimeout(c,0,e)},e.setImmediate=function(e){"function"!=typeof e&&(e=new Function(""+e));for(var t=new Array(arguments.length-1),r=0;r<t.length;r++)t[r]=arguments[r+1];var n={callback:e,args:t};return h[o]=n,i(o),o++},e.clearImmediate=f}function f(e){delete h[e]}function c(e){if(u)setTimeout(c,0,e);else{var t=h[e];if(t){u=!0;try{!function(e){var t=e.callback,r=e.args;switch(r.length){case 0:t();break;case 1:t(r[0]);break;case 2:t(r[0],r[1]);break;case 3:t(r[0],r[1],r[2]);break;default:t.apply(n,r)}}(t)}finally{f(e),u=!1}}}}function d(e){e.source===r&&"string"==typeof e.data&&0===e.data.indexOf(a)&&c(+e.data.slice(a.length))}}("undefined"==typeof self?void 0===e?this:e:self)}).call(this,"undefined"!=typeof global?global:"undefined"!=typeof self?self:"undefined"!=typeof window?window:{})},{}]},{},[10])(10)});
 }).call(this)}).call(this,require('_process'),typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},require("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],require("timers").setImmediate)
-},{"_process":77,"buffer":68,"timers":78}],76:[function(require,module,exports){
+},{"_process":80,"buffer":71,"timers":81}],79:[function(require,module,exports){
 (function (global){(function (){
 /*!
     localForage -- Offline Storage, Improved
@@ -37782,7 +48261,7 @@ module.exports = localforage_js;
 });
 
 }).call(this)}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],77:[function(require,module,exports){
+},{}],80:[function(require,module,exports){
 // shim for using process in browser
 var process = module.exports = {};
 
@@ -37968,7 +48447,7 @@ process.chdir = function (dir) {
 };
 process.umask = function() { return 0; };
 
-},{}],78:[function(require,module,exports){
+},{}],81:[function(require,module,exports){
 (function (setImmediate,clearImmediate){(function (){
 var nextTick = require('process/browser.js').nextTick;
 var apply = Function.prototype.apply;
@@ -38047,7 +48526,7 @@ exports.clearImmediate = typeof clearImmediate === "function" ? clearImmediate :
   delete immediateIds[id];
 };
 }).call(this)}).call(this,require("timers").setImmediate,require("timers").clearImmediate)
-},{"process/browser.js":77,"timers":78}],79:[function(require,module,exports){
+},{"process/browser.js":80,"timers":81}],82:[function(require,module,exports){
 let nextId = 1;
 
 class Node {
@@ -38439,7 +48918,7 @@ module.exports.PNGFS = class PNGFS {
     }
 }
 
-},{}],80:[function(require,module,exports){
+},{}],83:[function(require,module,exports){
 const { sleep, Uint8Buffer, toByteArray } = require('./Uint8Buffer.js');
 
 // Timeouts
@@ -38987,7 +49466,7 @@ class SamBA {
 
 module.exports.SamBA = SamBA;
 
-},{"./Uint8Buffer.js":55}],81:[function(require,module,exports){
+},{"./Uint8Buffer.js":58}],84:[function(require,module,exports){
 module.exports.stdlib = `
 
 /**
@@ -39264,7 +49743,7 @@ var D:boolean;
 
 `;
 
-},{}],82:[function(require,module,exports){
+},{}],85:[function(require,module,exports){
 "use strict";
 
 Object.defineProperty(exports, "__esModule", {
@@ -39311,4 +49790,4 @@ class WordCopyApplet extends _applet.Applet {
 }
 exports.WordCopyApplet = WordCopyApplet;
 
-},{"./applet":56,"./samba":80}]},{},[61]);
+},{"./applet":59,"./samba":83}]},{},[64]);

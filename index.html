@@ -451,7 +451,7 @@
            margin: 2px;
        }
       </style>
-      <script src="index.min.js?nc=27"></script>
+      <script src="index.min.js?nc=28"></script>
       <script>
        var require = { paths: { vs: './monaco/vs' } };
       </script>
@@ -478,7 +478,7 @@
       </div>
 
       <div id="ide" class="hidden" index-Main="setupIDE">
-        <div id="leftbar">
+        <div id="leftbar" bind-dragenter="cancelEvent" bind-dragover="cancelEvent" bind-drop="dropFile">
           <div id="projectcontrols" index-IDE="setupProjectControls">
             <button id="toTOP" bind-click="goToTOP">«</button>
             <h1 id="projectNameLabel" read-text="projectName"></h1>
@@ -512,11 +512,17 @@
             <button id="newDir" bind-click="createDir">+Dir</button>
             <button id="exportProject" bind-click="exportProject">Export</button>
           </div>
-          <div id="treelist" bind-dragenter="cancelEvent" bind-dragover="cancelEvent" bind-drop="dropFile"></div>
+          <div id="treelist"></div>
         </div>
         <div id="maincolumn">
           <div id="tabcontainer" index-IDE="setupTabContainer"></div>
-          <div id="consolecontainer" index-IDE="setupConsoleContainer"></div>
+          <div id="consolecontainer" index-IDE="setupConsoleContainer">
+            <div class="console">
+              For help with the MicoJS IDE and/or language, see the <a href="https://github.com/micojs/micojs.github.io/wiki">wiki</a>.<br/>
+              Found a bug? Feel free to file an <a href="https://github.com/micojs/micojs.github.io/issues">issue</a> on github.<br/>
+              Checked the wiki and still have questions? Ask in the <a href="https://discord.gg/hRvs9uEYE3">ESPboy</a> / <a href="https://discord.gg/p72xfsJeXD">Gamebuino</a> / <a href="https://discord.gg/TtqQcVA">Pokitto</a> discord servers.
+            </div>
+          </div>
         </div>
       </div>
 
