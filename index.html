@@ -451,7 +451,13 @@
            margin: 2px;
        }
       </style>
-      <script src="index.min.js?nc=28"></script>
+
+      <script src="./blockly_compressed.js"></script>
+      <script src="./blocks_compressed.js"></script>
+      <script src="./blockly_en.js"></script>
+      <script src="./javascript_compressed.js"></script>
+
+      <script src="index.min.js?nc=29"></script>
       <script>
        var require = { paths: { vs: './monaco/vs' } };
       </script>
@@ -466,7 +472,8 @@
         <div id="newProjects">
           <h1>My Projects</h1>
           <input id="newprojectname" bind-change="checkName"></input>
-          <button bind-click="newProject">New Project</button>
+          <button bind-click="newJSProject">New JavaScript Project</button>
+          <button bind-click="newBlocklyProject">New Blocks Project</button>
         </div>
         <div id="projectSelector" readwrite-value="project" bind-click="clickProject" for-each="projectList">
           <div class="projectSelectorRow">
