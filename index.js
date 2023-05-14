@@ -27271,6 +27271,31 @@ const toolbox = {
             javascript: block => `setFont(R.${block.getFieldValue("FONT") || 'Mini'});\n`
         },
 
+        "MicoJS.button":{
+            message0: "button %1 pressed",
+            args0: [
+                {
+                    "type": "field_dropdown",
+                    "name": "BUTTON",
+                    "options": [
+                        ['A', 'A'],
+                        ['B', 'B'],
+                        ['C', 'C'],
+                        ['D', 'D'],
+                        ['UP', 'UP'],
+                        ['DOWN', 'DOWN'],
+                        ['LEFT', 'LEFT'],
+                        ['RIGHT', 'RIGHT']
+                    ]
+                }
+            ],
+            output: null,
+            colour: 230,
+            tooltip: "TRUE if button is held down",
+            helpUrl: "https://github.com/micojs/micojs.github.io/wiki/API#textmessagestring-xnumber-ynumbervoid",
+            javascript: block => [block.getFieldValue("BUTTON") || 'A', JavaScript.ORDER_FUNCTION_CALL]
+        },
+
         "MicoJS.showText":{
             message0: "show text: %1 X: %2 Y: %3",
             args0: [
