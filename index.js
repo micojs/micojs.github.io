@@ -30742,19 +30742,41 @@ class Preview {
     container.style["min-width"] = width * zoom + "px";
     container.parentElement.style["min-width"] = width * zoom + "px";
   }
+  htmlStub() {
+    document.addEventListener('DOMContentLoaded', _ => {
+      if (typeof canvas != "undefined") {
+        canvas.addEventListener('click', ({
+          clientX,
+          clientY
+        }) => {
+          const X = Math.round(clientX / canvas.clientWidth * 1000) / 1000;
+          const Xpx = Math.round(X * canvas.width);
+          const Y = Math.round(clientY / canvas.clientHeight * 1000) / 1000;
+          const Ypx = Math.round(Y * canvas.height);
+          if (window.top != window) window.top.postMessage({
+            log: [`click:
+X: ${Xpx}px or getWidth()*${X}
+Y: ${Ypx}px or getHeight()*${Y}
+`]
+          }, "*");
+        });
+      }
+    });
+  }
   showHTML(html) {
     this.view.screen.remove();
     this.view.screencontainer.innerHTML = this.view.screen.outerHTML;
     const screen = this.view.screencontainer.querySelector('iframe');
     screen.src = "about:blank";
-    if (html) {
-      screen.contentWindow.document.open();
-      screen.contentWindow.document.write(html);
-      screen.contentWindow.document.close();
-      screen.focus();
-    }
+    let stopped = !html;
+    if (!stopped) screen.focus();
+    html = html || '';
+    html += `<script>(function ${this.htmlStub.toString()})();</script>`;
+    screen.contentWindow.document.open();
+    screen.contentWindow.document.write(html);
+    screen.contentWindow.document.close();
     this.resize();
-    this.view.run.textContent = html ? 'Stop' : 'Run';
+    this.view.run.textContent = !stopped ? 'Stop' : 'Run';
   }
   toggleRun() {
     this.model.set('runSize', this.model.get('previewHTML') ? null : this.getPlatformSize());
