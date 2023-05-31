@@ -483,6 +483,7 @@ class Method extends Scope {
     this.capturers = undefined;
     this.caches = undefined;
     this.returnable = true;
+    this.returnType = undefined;
   }
   guessObjectSize(reg) {
     reg = reg || new Set();
@@ -11097,7 +11098,7 @@ function local(node) {
   //     return `${encode(node)}`;
   return encode(node);
 }
-function encode(node, reg) {
+function encode(node, write) {
   switch (node.constructor.name) {
     case "Method":
       if (node.isNative) return node.isNative;
@@ -11106,9 +11107,9 @@ function encode(node, reg) {
 
     case "Var":
       if (cpp.globals[node.id]) return node.name;
-      return node.name ? `_${node.id}/*${node.name}*/` : `_${node.id}`;
+      return node.hasCTV && !write ? `${literalToString(node.CTV)}/*${node.name}*/` : node.name ? `_${node.id}/*${node.name}*/` : `_${node.id}`;
     case "Literal":
-      return literalToString(node.value, !!reg);
+      return literalToString(node.value);
     case "LookUp":
       const ctx = node.container || node.parent;
       if (ctx instanceof ir.Var) {
@@ -11120,12 +11121,12 @@ function encode(node, reg) {
             return `RESOURCEREF(${node.variable.value})`;
           }
         }
-        return `js::get(${encode(ctx)}, ${encode(node.variable, false)})`;
+        return `js::get(${encode(ctx, true)}, ${encode(node.variable, false)})`;
       } else if (ctx instanceof ir.Scope) {
         if (node.variable === "undefined") return 'js::Undefined::Undefined';
         const child = ctx.find(node.variable, true);
         if (!child) throw `No variable named ${JSON.stringify(node)}`;
-        return encode(child);
+        return encode(child, write);
       }
   }
   return node.constructor.name;
@@ -11193,17 +11194,17 @@ class CPP {
     return [this.Deref(), node.hasValue ? `return {${encode(this.stack.pop())}};` : `return {};`];
   }
   Method(node) {
-    this.out.unshift(`js::Local ${encode(node)}(js::Local&, bool);`);
+    this.out.unshift(`js::Local ${encode(node, true)}(js::Local&, bool);`);
     if (node.isNative) return;
     const oldMethod = this.method;
     this.method = node;
-    const method = ['', `js::Local ${encode(node)}(js::Local& ${encode(node.args)}, bool isNew)`];
+    const method = ['', `js::Local ${encode(node, true)}(js::Local& ${encode(node.args, true)}, bool isNew)`];
     this.out.push(method);
     method.push(this.Scope(node, true));
     this.method = oldMethod;
   }
   declare(v) {
-    return v.kind == "capture" ? `js::Tagged& ${encode(v)} = *js::getTaggedPtr(js::to<js::Object*>(${encode(this.method.args)}), ${literalToString(v.name, true)}, true);` : v.kind == "cache" ? `js::Tagged& ${encode(v)} = *js::getTaggedPtr(${encode(this.method.index["this"])}.object(), ${literalToString(v.name, true)}, true, true);` : v.isCaptured() ? `js::Tagged& ${encode(v)} = *js::set(${encode(this.method.context)}, ${literalToString(v.name, true)}, {});` : v.declType == "int32_t" ? `int32_t ${encode(v)}; // ${v.kind}` : v.declType == "uint32_t" ? `uint32_t ${encode(v)}; // ${v.kind}` : v.declType == "Float" ? `js::Float ${encode(v)}; // ${v.kind}` : v.declType == "string" ? `js::BufferRef ${encode(v)}; // ${v.kind}` : `js::Local ${encode(v)}; // ${v.kind} ${v.declType}`;
+    return v.kind == "capture" ? `js::Tagged& ${encode(v, true)} = *js::getTaggedPtr(js::to<js::Object*>(${encode(this.method.args)}), ${literalToString(v.name, true)}, true);` : v.kind == "cache" ? `js::Tagged& ${encode(v, true)} = *js::getTaggedPtr(${encode(this.method.index["this"])}.object(), ${literalToString(v.name, true)}, true, true);` : v.isCaptured() ? `js::Tagged& ${encode(v, true)} = *js::set(${encode(this.method.context)}, ${literalToString(v.name, true)}, {});` : v.kind == "const" && v.hasCTV ? `// const ${encode(v, true)} = ${encode(v)};` : v.declType == "int32_t" ? `int32_t ${encode(v, true)}; // ${v.kind}` : v.declType == "uint32_t" ? `uint32_t ${encode(v, true)}; // ${v.kind}` : v.declType == "Float" ? `js::Float ${encode(v, true)}; // ${v.kind}` : v.declType == "string" ? `js::BufferRef ${encode(v, true)}; // ${v.kind}` : `js::Local ${encode(v, true)}; // ${v.kind} ${v.declType}`;
   }
   Scope(node, endWithReturn) {
     const decls = [];
@@ -11273,10 +11274,10 @@ class CPP {
     if (node.context) {
       varindex[node.context.id] = node.context;
       setup.push(this.declare(node.context));
-      setup.push(`${encode(node.context)} = js::alloc(${Object.keys(node.captured).length});`);
+      setup.push(`${encode(node.context, true)} = js::alloc(${Object.keys(node.captured).length});`);
       for (let capture of Object.values(node.capturers)) {
         varindex[capture.ctx.id] = capture.ctx;
-        const strcaptures = encode(capture.capturer);
+        const strcaptures = encode(capture.capturer, true);
         setup.push(`js::Local ${strcaptures} = js::alloc(1, ${encode(node.context)});`);
         setup.push(`js::set(${strcaptures}, V_4747method, ::${encode(capture.capturer)});`);
       }
@@ -11322,7 +11323,7 @@ class CPP {
         const variable = new ir.Var();
         this.method.add(variable);
         this.stack.push(variable);
-        return `${encode(variable)} = ${encode(lookup)};`;
+        return `${encode(variable, true)} = ${encode(lookup)};`;
       } else if (ctx instanceof ir.Scope) {
         const variable = ctx.find(lookup.variable, true);
         if (!variable) this.error(`ReferenceError: ${lookup.variable} is not defined`, lookup.location);
@@ -11344,8 +11345,8 @@ class CPP {
     let right = this.stack.pop();
     if (!right) this.error(`Missing right-hand side for ${node.operator}`);
     const lookup = this.stack.pop();
-    if (!lookup) this.error(`Missing left-hand side for ${node.operator}${encode(right)}`);
-    if (!(lookup instanceof ir.LookUp)) this.error(`Invalid assignment left-hand side ${encode(lookup)}`);
+    if (!lookup) this.error(`Missing left-hand side for ${node.operator}${encode(right, true)}`);
+    if (!(lookup instanceof ir.LookUp)) this.error(`Invalid assignment left-hand side ${encode(lookup, true)}`);
     const ctx = lookup.container || lookup.parent;
     let ret = [];
     if (node.operator != "=") {
@@ -11363,22 +11364,28 @@ class CPP {
           ctx.read++;
           let v = this.method.cached(lookup.variable.value);
           // v.setType(right.declType || right.type);
-          ret.push(`${encode(v)} = ${encode(right)};`);
+          ret.push(`${encode(v, true)} = ${encode(right)};`);
           ret.push(`if (auto obj = std::get_if<js::Object*>(&${encode(v)}); obj && *obj) (*obj)->setMark();`);
         } else {
-          ret.push(`js::set(${encode(ctx)}, ${encode(lookup.variable, true)}, ${encode(right)});`);
+          ret.push(`js::set(${encode(ctx, true)}, ${encode(lookup.variable)}, ${encode(right)});`);
         }
       } else {
-        ret.push(`js::set(${encode(ctx)}, ${encode(lookup.variable)}, ${encode(right)});`);
+        ret.push(`js::set(${encode(ctx, true)}, ${encode(lookup.variable)}, ${encode(right)});`);
       }
     } else if (ctx instanceof ir.Scope) {
       let v = ctx.find(lookup.variable, true, true);
       if (!v) this.error(`Variable ${lookup.variable} not defined`);
       if (v.kind == "const") {
         v.setDeclType(right.type);
-        if (right.hasCTV) v.CTV = right.CTV;
+        if (right.hasCTV) {
+          v.CTV = right.CTV;
+        }
       }
-      ret.push(`${encode(v)} = ${encode(right)};`);
+      if (v.kind != "const" || !right.hasCTV) {
+        ret.push(`${encode(v, true)} = ${encode(right)};`);
+      } else {
+        ret.push(`// const ${encode(v, true)} = ${encode(right)};`);
+      }
       v.write++;
     }
     this.stack.push(right);
@@ -11426,7 +11433,7 @@ class CPP {
     this.stack.push(tmp);
     if (tmp instanceof ir.Var) {
       node.parent.method.add(tmp);
-      let ret = `js::op_${opName}(${encode(tmp)}, ${encode(lookup)}); // ${node.operator}`;
+      let ret = `js::op_${opName}(${encode(tmp, true)}, ${encode(lookup)}); // ${node.operator}`;
       lookup.type = tmp.type;
       return ret;
     }
@@ -11538,58 +11545,50 @@ class CPP {
         break;
       case "lt":
         tmp.setDeclType("int32_t");
-        tmp.hasCTV = left.hasCTV && right.hasCTV;
-        if (tmp.hasCTV) {
-          tmp.CTV = left.CTV < right.CTV;
+        if (left.hasCTV && right.hasCTV) {
+          tmp = new ir.Literal(left.CTV < right.CTV);
         }
         break;
       case "leq":
         tmp.setDeclType("int32_t");
-        tmp.hasCTV = left.hasCTV && right.hasCTV;
-        if (tmp.hasCTV) {
-          tmp.CTV = left.CTV <= right.CTV;
+        if (left.hasCTV && right.hasCTV) {
+          tmp = new ir.Literal(left.CTV <= right.CTV);
         }
         break;
       case "gt":
         tmp.setDeclType("int32_t");
-        tmp.hasCTV = left.hasCTV && right.hasCTV;
-        if (tmp.hasCTV) {
-          tmp.CTV = left.CTV > right.CTV;
+        if (left.hasCTV && right.hasCTV) {
+          tmp = new ir.Literal(left.CTV > right.CTV);
         }
         break;
       case "geq":
         tmp.setDeclType("int32_t");
-        tmp.hasCTV = left.hasCTV && right.hasCTV;
-        if (tmp.hasCTV) {
-          tmp.CTV = left.CTV >= right.CTV;
+        if (left.hasCTV && right.hasCTV) {
+          tmp = new ir.Literal(left.CTV >= right.CTV);
         }
         break;
       case "neq":
         tmp.setDeclType("int32_t");
-        tmp.hasCTV = left.hasCTV && right.hasCTV;
-        if (tmp.hasCTV) {
-          tmp.CTV = left.CTV != right.CTV;
+        if (left.hasCTV && right.hasCTV) {
+          tmp = new ir.Literal(left.CTV != right.CTV);
         }
         break;
       case "eq":
         tmp.setDeclType("int32_t");
-        tmp.hasCTV = left.hasCTV && right.hasCTV;
-        if (tmp.hasCTV) {
-          tmp.CTV = left.CTV == right.CTV;
+        if (left.hasCTV && right.hasCTV) {
+          tmp = new ir.Literal(left.CTV == right.CTV);
         }
         break;
       case "seq":
         tmp.setDeclType("int32_t");
-        tmp.hasCTV = left.hasCTV && right.hasCTV;
-        if (tmp.hasCTV) {
-          tmp.CTV = left.CTV === right.CTV;
+        if (left.hasCTV && right.hasCTV) {
+          tmp = new ir.Literal(left.CTV === right.CTV);
         }
         break;
       case "sneq":
         tmp.setDeclType("int32_t");
-        tmp.hasCTV = left.hasCTV && right.hasCTV;
-        if (tmp.hasCTV) {
-          tmp.CTV = left.CTV !== right.CTV;
+        if (left.hasCTV && right.hasCTV) {
+          tmp = new ir.Literal(left.CTV !== right.CTV);
         }
         break;
       case "in":
@@ -11654,7 +11653,7 @@ class CPP {
     this.stack.push(tmp);
     if (tmp instanceof ir.Var) {
       tmp.write++;
-      out.push(`js::op_${op}(${encode(tmp)}, ${encode(left)}, ${encode(right)});`);
+      out.push(`js::op_${op}(${encode(tmp, true)}, ${encode(left)}, ${encode(right)});`);
     }
     return out;
   }
@@ -11696,8 +11695,8 @@ class CPP {
   CallExpression(node) {
     if (node.isForward) {
       const calleeLU = this.stack.pop();
-      const strcallee = encode(calleeLU);
-      return `js::call(${strcallee}, ${encode(this.method.args)}, false);`;
+      const strcallee = encode(calleeLU, true);
+      return `js::call(${strcallee}, ${encode(this.method.args)});`;
     }
     var args = this.method.temporaries.pop();
     if (!args) {
@@ -11711,7 +11710,7 @@ class CPP {
       this.method.add(ret);
     }
     const argv = [];
-    const strargs = encode(args);
+    const strargs = encode(args, true);
     for (let i = 0; i < node.argc; ++i) {
       argv[node.argc - i - 1] = `js::set(${strargs}, ${literalToString(node.argc - i - 1, true)}, ${encode(this.stack.pop())});`;
     }
@@ -11719,7 +11718,8 @@ class CPP {
     this.stack.push(calleeLU);
     argv.push(this.Deref());
     let argc = node.argc;
-    const strcallee = encode(this.stack.pop());
+    const callee = this.stack.pop();
+    const strcallee = encode(callee, true);
     if (node.isNew) {
       argc++;
     } else if (calleeLU.container) {
@@ -11728,8 +11728,8 @@ class CPP {
     }
     this.stack.push(ret);
     this.method.temporaries.push(args);
-    const assign = ret ? `${encode(ret)} = ` : '';
-    return [`${strargs} = js::arguments(${argc});`, argv, `${assign}js::call(${strcallee}, ${strargs}, ${node.isNew});`, `${strargs}.reset();`];
+    const assign = ret ? `${encode(ret, true)} = ` : '';
+    return [`${strargs} = js::arguments(${argc});`, argv, callee instanceof ir.Method && !node.isNew ? `${assign}${strcallee}(${strargs}, false);` : `${assign}js::${node.isNew ? 'create' : 'call'}(${strcallee}, ${strargs});`, `${strargs}.reset();`];
   }
   toString(platformName) {
     let minStringTable = Object.keys(this.minStringTable).map(s => `#define ${s} ${this.minStringTable[s]}`).join('\n');
@@ -11782,7 +11782,7 @@ class CPP {
                 }
               }
               if (typeof el === 'number') {
-                out.push('0x' + (el | 0).toString(16));
+                out.push('0x' + (el >>> 0).toString(16));
                 continue;
               }
             }
@@ -11974,9 +11974,10 @@ class ProgramParser {
       });
     }
     this.push(block, _ => {
-      this.parse(node.consequent, node.consequent.type == "BlockStatement" ? block : null);
+      this.parse(node.consequent); // , node.consequent.type == "BlockStatement" ? block : null);
     });
   }
+
   WhileStatement(node, block) {
     block = block || new ir.Scope();
     this.scope.add(block);
@@ -11991,9 +11992,10 @@ class ProgramParser {
       this.scope.add(new ir.Literal(true));
     });
     this.push(block, _ => {
-      this.parse(node.body, node.body.type == "BlockStatement" ? block : null);
+      this.parse(node.body); // , node.body.type == "BlockStatement" ? block : null);
     });
   }
+
   ForInStatement(node, block) {
     block = block || new ir.Scope();
     this.scope.add(block);
@@ -12553,7 +12555,7 @@ class JSC {
     const stdcalls = `
                 debug, Array,
                 rand,
-                abs, sign, floor, round, ceil, sqrt,
+                abs, sign::int32_t, floor, round, ceil, sqrt,
                 cos, sin, atan2, tan,
                 clamp, min, max, hash:hashjs,
                 vectorLength, angleDifference
@@ -12600,7 +12602,10 @@ class JSC {
   }
   include(path) {
     if (path in this.dependencies) return;
-    this.dependencies[path] = this.reader(path);
+    const v = this.reader(path);
+    ;
+    this.dependencies[path] = null;
+    this.add(path, v);
   }
   ifeq(key, val) {
     this.set("cancel", this.opts[key] != val);
@@ -12632,6 +12637,7 @@ class JSC {
       let parts = name.split(':');
       const func = new ir.Method(parts[0]);
       func.isNative = parts[1] || parts[0];
+      func.returnType = parts[2];
       this.program.main.add(func);
     });
   }
@@ -26547,8 +26553,8 @@ $[[translated]]
 void JSinit() {
   {
     js::Local args = js::arguments(0);
-    js::call($[[main]], args, false);
-    js::call($[[init]], args, false);
+    js::call($[[main]], args);
+    js::call($[[init]], args);
   }
   js::gc();
 }
@@ -26557,7 +26563,7 @@ void JSrender(uint32_t time) {
   PROFILER;
   js::Local args = js::arguments(1);
   js::set(args, V_0, time);
-  js::call($[[render]], args, false);
+  js::call($[[render]], args);
 }
 
 void JSupdate(uint32_t time, uint32_t updateCount) {
@@ -26566,7 +26572,7 @@ void JSupdate(uint32_t time, uint32_t updateCount) {
     js::Local args = js::arguments(1);
     js::set(args, V_0, time);
     for (uint32_t i = 0; i < updateCount; ++i)
-      js::call($[[update]], args, false);
+      js::call($[[update]], args);
   }
 }
 `;
@@ -26599,8 +26605,8 @@ $[[translated]]
 void JSinit() {
   {
     js::Local args = js::arguments(0);
-    js::call($[[main]], args, false);
-    js::call($[[init]], args, false);
+    js::call($[[main]], args);
+    js::call($[[init]], args);
   }
   js::gc();
 }
@@ -26610,8 +26616,8 @@ void JSupdate(uint32_t time, uint32_t updateCount) {
     js::Local args = js::arguments(1);
     js::set(args, V_0, time);
     for (uint32_t i = 0; i < updateCount; ++i)
-      js::call($[[update]], args, false);
-    js::call($[[render]], args, false);
+      js::call($[[update]], args);
+    js::call($[[render]], args);
   }
 }
 `;
@@ -26645,8 +26651,8 @@ $[[translated]]
 void JSinit() {
   {
     js::Local args = js::arguments(0);
-    js::call($[[main]], args, false);
-    js::call($[[init]], args, false);
+    js::call($[[main]], args);
+    js::call($[[init]], args);
   }
   js::gc();
 }
@@ -26655,7 +26661,7 @@ void JSrender(uint32_t time) {
   PROFILER;
   js::Local args = js::arguments(1);
   js::set(args, V_0, time);
-  js::call($[[render]], args, false);
+  js::call($[[render]], args);
 }
 
 void JSupdate(uint32_t time, uint32_t updateCount) {
@@ -26664,7 +26670,7 @@ void JSupdate(uint32_t time, uint32_t updateCount) {
     js::Local args = js::arguments(1);
     js::set(args, V_0, time);
     for (uint32_t i = 0; i < updateCount; ++i)
-      js::call($[[update]], args, false);
+      js::call($[[update]], args);
   }
 }
 `;
@@ -26697,8 +26703,8 @@ $[[translated]]
 void JSinit() {
   {
     js::Local args = js::arguments(0);
-    js::call($[[main]], args, false);
-    js::call($[[init]], args, false);
+    js::call($[[main]], args);
+    js::call($[[init]], args);
   }
   js::gc();
 }
@@ -26709,8 +26715,8 @@ void JSupdate(uint32_t time, uint32_t updateCount) {
     js::Local args = js::arguments(1);
     js::set(args, V_0, time);
     for (uint32_t i = 0; i < updateCount; ++i)
-      js::call($[[update]], args, false);
-    js::call($[[render]], args, false);
+      js::call($[[update]], args);
+    js::call($[[render]], args);
   }
 }
 `;
@@ -26744,8 +26750,8 @@ $[[translated]]
 void JSinit() {
   {
     js::Local args = js::arguments(0);
-    js::call($[[main]], args, false);
-    js::call($[[init]], args, false);
+    js::call($[[main]], args);
+    js::call($[[init]], args);
   }
   js::gc();
 }
@@ -26754,7 +26760,7 @@ void JSrender(uint32_t time) {
   PROFILER;
   js::Local args = js::arguments(1);
   js::set(args, V_0, time);
-  js::call($[[render]], args, false);
+  js::call($[[render]], args);
 }
 
 void JSupdate(uint32_t time, uint32_t updateCount) {
@@ -26763,7 +26769,7 @@ void JSupdate(uint32_t time, uint32_t updateCount) {
     js::Local args = js::arguments(1);
     js::set(args, V_0, time);
     for (uint32_t i = 0; i < updateCount; ++i)
-      js::call($[[update]], args, false);
+      js::call($[[update]], args);
   }
 }
 `;
@@ -26797,8 +26803,8 @@ $[[translated]]
 void JSinit() {
   {
     js::Local args = js::arguments(0);
-    js::call($[[main]], args, false);
-    js::call($[[init]], args, false);
+    js::call($[[main]], args);
+    js::call($[[init]], args);
   }
   js::gc();
 }
@@ -26807,8 +26813,8 @@ void JSupdate() {
   {
     js::Local args = js::arguments(1);
     js::set(args, V_0, Pokitto::Core::getTime());
-    js::call($[[update]], args, false);
-    js::call($[[render]], args, false);
+    js::call($[[update]], args);
+    js::call($[[render]], args);
   }
 }
 `;
@@ -27475,8 +27481,12 @@ module.exports.BlockEditor = BlockEditor;
 
 },{"./PreBuild.js":46,"./dom.js":62}],38:[function(require,module,exports){
 const {JSC} = require('../JSC/jsc.js');
+const {dom, index} = require('./dom.js');
 
-function buildHTML(code, [width, height]) {
+let assets;
+let browser;
+
+async function buildHTML(code, [width, height]) {
     return `<!doctype html>
 <html>
 <head>
@@ -27499,8 +27509,6 @@ margin: auto;
 image-rendering: pixelated;
 }
 </style>
-<script src="assets.js?nc=8"></script>
-<script src="browser.js?nc=9"></script>
 <script>
 ${code}
 </script>
@@ -27511,7 +27519,46 @@ ${code}
 </html>`
 }
 
+const decompressor = u => {
+var i,c,e=new Image,s=String.fromCharCode,a='';
+e.onload=_=>{
+u=document.createElement('canvas');
+u.width=i=e.naturalWidth|0;
+u.height=c=e.naturalHeight|0;
+u=u.getContext('2d');
+u.drawImage(e,0,0);
+u=u.getImageData(0,0,i,c).data;
+i=0;
+while(i<u.length){a+=s(u[i++]||32);a+=s(u[i++]||32);a+=s(u[i]||32);i+=2;}
+eval(a);
+};
+e.src=u;
+};
+
+function compress(src) {
+    const dim = Math.ceil(Math.sqrt(Math.ceil(src.length/3)));
+    const img = dom('canvas', {width:dim, height:dim});
+    const ctx = img.getContext('2d');
+    const id = ctx.getImageData(0, 0, dim, dim);
+    const data = id.data;
+    let j = 0;
+    for (let i = 0; i < src.length;) {
+        data[j++] = src.charCodeAt(i++);
+        data[j++] = src.charCodeAt(i++);
+        data[j++] = src.charCodeAt(i++);
+        data[j++] = 255;
+    }
+    ctx.putImageData(id, 0, 0);
+    const url = img.toDataURL();
+    const out = `(${decompressor})('${url}')`;
+    return out;
+}
+
 async function build(fs, size) {
+    if (!assets)
+        assets = await (await fetch('assets.js?nc=' + Math.random())).text();
+    if (!browser)
+        browser = await (await fetch('browser.js?nc=' + Math.random())).text();
     const compiler = new JSC(path => fs.readFile(path));
     compiler.include('/std.js');
     fs.ls('/.R/')?.forEach?.(entry => {
@@ -27519,12 +27566,14 @@ async function build(fs, size) {
             compiler.include('/.R/' + entry.name);
     });
     compiler.process();
-    return buildHTML(compiler.write('js'), size);
+    const code = assets + browser + compiler.write('js');
+    const compressed = compress(code);
+    return await buildHTML(compressed, size);
 }
 
 module.exports.build = build;
 
-},{"../JSC/jsc.js":7}],39:[function(require,module,exports){
+},{"../JSC/jsc.js":7,"./dom.js":62}],39:[function(require,module,exports){
 const {dom} = require('./dom.js');
 
 class Console {
@@ -29179,6 +29228,38 @@ class ${fileName} {
     this.refreshTree();
     if (reference.isFile()) {
       this.openFile(reference.path);
+    }
+  }
+  async exportHTML() {
+    const size = this.model.get('size', [220, 178]);
+    function save(name, data) {
+      const link = document.createElement('a');
+      link.style.display = 'none';
+      document.body.appendChild(link);
+      const blob = new Blob([data], {
+        type: 'text/html; charset=utf-8'
+      });
+      link.href = URL.createObjectURL(blob);
+      link.download = name;
+      link.click();
+    }
+    try {
+      this.#projectModel.flush();
+      const fs = await PreBuild(this.#fs);
+      const html = await Browser.build(fs, size);
+      save('game.html', html);
+    } catch (ex) {
+      console.log(ex);
+      if (ex && typeof ex == 'object') {
+        let msg = ex.description || ex.error || ex.message || ex + '';
+        postMessage({
+          build: [msg]
+        }, '*');
+      } else if (typeof ex == 'string') {
+        postMessage({
+          build: [ex]
+        }, '*');
+      }
     }
   }
   async run(size) {

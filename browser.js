@@ -28,7 +28,21 @@ const _internal = {
     }
 };
 
-addEventListener('DOMContentLoaded', _=>{
+(cb=>{
+    if (canvas) setTimeout(cb, 100);
+    else addEventListener('DOMContentLoaded', cb);
+})(_=>{
+    function resize() {
+        const aspect = canvas.width / canvas.height;
+        const w = window.innerWidth|0;
+        const h = window.innerHeight|0;
+        const s = Math.min(w, h * aspect);
+        canvas.style.width = s + 'px';
+        canvas.style.height = Math.round(s / aspect) + 'px';
+    }
+
+    addEventListener('resize', resize);
+
     document.body.addEventListener('keydown', event => {
         if (event.code == "ArrowUp" || event.code == "KeyI") _internal.UP = true;
         else if (event.code == "ArrowDown" || event.code == "KeyK") _internal.DOWN = true;
@@ -58,6 +72,8 @@ addEventListener('DOMContentLoaded', _=>{
     let startTime = performance.now();
     let prevTime = startTime;
     let updateCount = 0;
+
+    resize();
     init();
     requestAnimationFrame(tick);
 
