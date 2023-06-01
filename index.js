@@ -30153,7 +30153,7 @@ class ${fileName} {
     }
   }
   async exportHTML() {
-    const size = this.model.get('size', [220, 178]);
+    const size = this.model.get('platformSize', [220, 178]);
     function save(name, data) {
       const link = document.createElement('a');
       link.style.display = 'none';
@@ -31730,6 +31730,7 @@ class Preview {
     const container = this.view.screencontainer;
     const size = this.getPlatformSize();
     const zoom = this.view.zoom.value;
+    this.model.set('platformSize', size || [220, 176]);
     if (!size) {
       container.display = 'none';
       return;
