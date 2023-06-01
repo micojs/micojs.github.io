@@ -44,6 +44,7 @@ const _internal = {
     addEventListener('resize', resize);
 
     document.body.addEventListener('keydown', event => {
+        event.preventDefault();
         if (event.code == "ArrowUp" || event.code == "KeyI") _internal.UP = true;
         else if (event.code == "ArrowDown" || event.code == "KeyK") _internal.DOWN = true;
         else if (event.code == "ArrowLeft" || event.code == "KeyJ") _internal.LEFT = true;
@@ -55,6 +56,7 @@ const _internal = {
     });
 
     document.body.addEventListener('keyup', event => {
+        event.preventDefault();
         if (event.code == "ArrowUp" || event.code == "KeyI") _internal.UP = false;
         else if (event.code == "ArrowDown" || event.code == "KeyK") _internal.DOWN = false;
         else if (event.code == "ArrowLeft" || event.code == "KeyJ") _internal.LEFT = false;
