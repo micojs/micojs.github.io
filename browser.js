@@ -1085,7 +1085,7 @@ function text(str, x, y){
 
     function pixel(x, y) {
         const fb = _internal.framebuffer;
-        if (x < fb.width && y < fb.height) {
+        if (x >= 0 && y >= 0 && x < fb.width && y < fb.height) {
             const pen = _internal.pen;
             let i = (y * fb.width + x) * 4;
             fb.data[i++] = pen.r;
