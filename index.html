@@ -30,6 +30,16 @@
            box-sizing: border-box;
        }
 
+       .layer {
+           position: absolute;
+           top:0;
+           left:0;
+           bottom:0;
+           right:0;
+           padding: inherit;
+           overflow: auto;
+       }
+
        .console {
            overflow: auto;
            background-color: #222;
@@ -457,7 +467,7 @@
       <script src="./blockly_en.js"></script>
       <script src="./javascript_compressed.js"></script>
 
-      <script src="index.min.js?nc=32"></script>
+      <script src="index.min.js?nc=33"></script>
       <script>
        var require = { paths: { vs: './monaco/vs' } };
       </script>
@@ -469,17 +479,19 @@
     <div id="main">
 
       <div id="top" class="hidden" index-Main="setupTOP">
-        <div id="newProjects">
-          <h1>My Projects</h1>
-          <input id="newprojectname" bind-change="checkName"></input>
-          <button bind-click="newJSProject">New JavaScript Project</button>
-          <button bind-click="newBlocklyProject">New Blocks Project</button>
-        </div>
-        <div id="projectSelector" readwrite-value="project" bind-click="clickProject" for-each="projectList">
-          <div class="projectSelectorRow">
-            <div class="nameLabel">${name}</div>
-            <button class="openProject" bind-click="openProject" project-id="${id}">Open</button>
-            <button class="deleteProject" bind-click="deleteProject" project-id="${id}">Delete</button>
+        <div id="dropTarget" class="layer" bind-dragenter="cancelEvent" bind-dragover="cancelEvent" bind-drop="dropFile">
+          <div id="newProjects">
+            <h1>My Projects</h1>
+            <input id="newprojectname" bind-change="checkName"></input>
+            <button bind-click="newJSProject">New JavaScript Project</button>
+            <button bind-click="newBlocklyProject">New Blocks Project</button>
+          </div>
+          <div id="projectSelector" readwrite-value="project" bind-click="clickProject" for-each="projectList">
+            <div class="projectSelectorRow">
+              <div class="nameLabel">${name}</div>
+              <button class="openProject" bind-click="openProject" project-id="${id}">Open</button>
+              <button class="deleteProject" bind-click="deleteProject" project-id="${id}">Delete</button>
+            </div>
           </div>
         </div>
       </div>

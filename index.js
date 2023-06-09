@@ -279,7 +279,7 @@ class Var {
     };
   }
   addDeref(str) {
-    if (!this.deref) this.deref = {};
+    if (!this.deref) this.deref = Object.create(null);
     this.deref[str] = str;
     // console.log("Add deref: ", this.name, str);
   }
@@ -486,18 +486,26 @@ class Method extends Scope {
     this.returnType = undefined;
   }
   guessObjectSize(reg) {
+    let log = !reg;
     reg = reg || new Set();
     let deref = 0;
+    console.log(this.name + " guess");
     for (let key in this.index["this"].deref || {}) {
       if (reg.has(key)) continue;
       reg.add(key);
+      if (log) console.log("  " + key);
       deref++;
     }
     for (let key in this.index) {
       const method = this.index[key];
-      if (!(method instanceof Method) || method.isClass) continue;
+      if (!(method instanceof Method) || method.isClass || method == this) continue;
       deref += method.guessObjectSize(reg);
+      if (reg.has(method.name)) continue;
+      reg.add(method.name);
+      if (log) console.log("  " + method.name + " <-----");
+      deref++;
     }
+    if (log) console.log(this.name + " total: " + deref + " " + [...reg].join(", "));
     return deref;
   }
   toJSON() {
@@ -11204,6 +11212,9 @@ class CPP {
     this.method = oldMethod;
   }
   declare(v) {
+    if (v.kind == "cache") {
+      this.method.index["this"].addDeref(v.name);
+    }
     return v.kind == "capture" ? `js::Tagged& ${encode(v, true)} = *js::getTaggedPtr(js::to<js::Object*>(${encode(this.method.args)}), ${literalToString(v.name, true)}, true);` : v.kind == "cache" ? `js::Tagged& ${encode(v, true)} = *js::getTaggedPtr(${encode(this.method.index["this"])}.object(), ${literalToString(v.name, true)}, true, true);` : v.isCaptured() ? `js::Tagged& ${encode(v, true)} = *js::set(${encode(this.method.context)}, ${literalToString(v.name, true)}, {});` : v.kind == "const" && v.hasCTV ? `// const ${encode(v, true)} = ${encode(v)};` : v.declType == "int32_t" ? `int32_t ${encode(v, true)}; // ${v.kind}` : v.declType == "uint32_t" ? `uint32_t ${encode(v, true)}; // ${v.kind}` : v.declType == "Float" ? `js::Float ${encode(v, true)}; // ${v.kind}` : v.declType == "string" ? `js::BufferRef ${encode(v, true)}; // ${v.kind}` : `js::Local ${encode(v, true)}; // ${v.kind} ${v.declType}`;
   }
   Scope(node, endWithReturn) {
@@ -29864,20 +29875,16 @@ class IDE {
   dropFile(event) {
     event.stopPropagation();
     event.preventDefault();
+    let parentPath = "";
     let parentElement = event.target.closest('.treenode.Directory');
-    if (!parentElement) {
-      return;
-    }
-    let parentPath = null;
-    for (let path in this.#treeNodes) {
-      let node = this.#treeNodes[path];
-      if (node.dom == parentElement) {
-        parentPath = path;
-        break;
+    if (parentElement) {
+      for (let path in this.#treeNodes) {
+        let node = this.#treeNodes[path];
+        if (node.dom == parentElement) {
+          parentPath = path;
+          break;
+        }
       }
-    }
-    if (!parentPath) {
-      return;
     }
     let files = event.dataTransfer?.files;
     if (!files?.length) {
@@ -33120,6 +33127,8 @@ module.exports.Flash = Flash;
 },{"./samba.js":84,"./wordcopyapplet.js":86}],54:[function(require,module,exports){
 const {dom, index} = require('./dom.js');
 const {Model} = require('./Model.js');
+const {PNGFS} = require('./pngfs.js');
+const {FS2Zip, Zip2FS, getMimeType} = require('./FS2Zip.js');
 
 class TOP {
     #el;
@@ -33145,15 +33154,64 @@ class TOP {
             this[event.target.getAttribute('bind-click')]?.(event);
     }
 
-    checkName() {
-        const old = this.#view.newprojectname.value;
-        const name = old
-              .trim()
-              .replace(/[^a-zA-Z 0-9]+/, '')
-              .substr(0, 18);
-        // if (old != name)
-        //     this.#view.newprojectname.value = name;
-        return name;
+    cancelEvent(event) {
+        event.stopPropagation();
+        event.preventDefault();
+    }
+
+    dropFile(event) {
+        let stop = false;
+        let files = event.dataTransfer?.files;
+        if (!files?.length)
+            return;
+        for( let i=0; i<files.length; ++i ){
+	    let file = files[i];
+	    let fr = new FileReader();
+            if (/\.zip$/i.test(file.name)) {
+                stop = true;
+	        let fr = new FileReader();
+	        fr.onload = loadProject.bind(this, fr, file.name);
+                fr.readAsArrayBuffer(file);
+            }
+        }
+
+        if (stop) {
+            event.stopPropagation();
+            event.preventDefault();
+        }
+
+        async function loadProject(fr, name) {
+            name = this.checkName(name.replace(/\.zip$/i, '').trim());
+            if (!this.isProjectNameAvailable(name)) {
+                alert(`Project ${name} already exists.\nYou must delete it before importing another with the same name.`);
+                return;
+            }
+
+            const id = this.newProjectId();
+            this.createProject(name, id);
+
+            const fs = new PNGFS();
+            await Zip2FS(fr, fs);
+
+            const modelId = 'project-' + id;
+            const projectModel = new Model();
+            await projectModel.useStorage(modelId);
+            projectModel.set('fs', fs.toJSON());
+            projectModel.flush();
+
+            this.#model.set(modelId, projectModel);
+        }
+    }
+
+    checkName(old) {
+        if (typeof old != "string")
+            old = this.#view.newprojectname.value;
+        return old.trim()
+                  .replace(/[^a-zA-Z 0-9]+/g, '')
+                  .replace(/\s+/g, ' ')
+                  .trim()
+                  .substr(0, 18)
+                  .trim();
     }
 
     newJSProject() {
@@ -33164,8 +33222,27 @@ class TOP {
         this.newProject("blockly");
     }
 
+    isProjectNameAvailable(name) {
+        const projectList = this.#model.get('projectList', []);
+        for (let project of projectList) {
+            if (project.name.toLowerCase() == name.toLowerCase()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    newProjectId() {
+        const projectList = this.#model.get('projectList', []);
+        let id = 0;
+        for (let project of projectList) {
+            if (id <= (project.id|0))
+                id = (project.id|0) + 1;
+        }
+        return id;
+    }
+
     async newProject(template) {
-        const rawName = this.#view.newprojectname.value.trim();
         const name = this.checkName();
         const newprojectname = this.#view.newprojectname;
         if (name.length == 0){
@@ -33174,37 +33251,39 @@ class TOP {
             return;
         }
 
-        const projectList = this.#model.get('projectList', []);
-
-        let id = 0;
-        for (let project of projectList) {
-            if (id <= (project.id|0))
-                id = (project.id|0) + 1;
-            if (project.name.toLowerCase() == name.toLowerCase()) {
-                newprojectname.focus();
-                newprojectname.placeholder = 'Name already taken by another project.';
-                newprojectname.value = '';
-                return;
-            }
+        if (!this.isProjectNameAvailable(name)) {
+            newprojectname.focus();
+            newprojectname.placeholder = 'Name already taken by another project.';
+            newprojectname.value = '';
+            return;
         }
 
+        let id = this.newProjectId();
+        this.createProject(name, id);
+        this.#model.set('newProjectTemplate', template);
+        this.#model.set('projectId', id);
+        this.#model.set('projectName', name);
+
+        this.#model.set('state', 'IDE');
+    }
+
+    async loadProjectFromRPIN(rpin) {
         const remote = this.#parent.remote;
-        const remoteProject = await remote.loadProject(rawName);
+        const remoteProject = await remote.loadProject(rpin);
         if (remoteProject) {
             const modelId = 'project-' + id;
             const projectModel = new Model();
             projectModel.useStorage(modelId);
             projectModel.set('fs', remoteProject.fs);
-            projectModel.set('RPIN', rawName);
+            projectModel.set('RPIN', rpin);
             this.#model.set(modelId, projectModel);
         }
+    }
 
+    createProject(name, id) {
         const project = {id, name};
+        const projectList = this.#model.get('projectList', []);
         projectList.push(project);
-        this.#model.set('newProjectTemplate', template);
-        this.#model.set('projectId', project.id);
-        this.#model.set('projectName', project.name);
-        this.#model.set('state', 'IDE');
         this.#model.set('projectList', projectList);
     }
 
@@ -33249,7 +33328,7 @@ class TOP {
 
 module.exports.TOP = TOP;
 
-},{"./Model.js":45,"./dom.js":62}],55:[function(require,module,exports){
+},{"./FS2Zip.js":41,"./Model.js":45,"./dom.js":62,"./pngfs.js":83}],55:[function(require,module,exports){
 const {dom} = require('./dom.js');
 
 class TabContainer {
