@@ -721,17 +721,22 @@ function scanTileMap(filter, callback) {
 function setTileMap(map) {
     if (map === _internal.mapsrc)
         return;
-    const u32 = Uint32Array.from(map);
-    const u8 = new Uint8Array(u32.buffer);
-    const out = Array.from(u8);
-    for (let i = 0; i < map.length; ++i) {
-        let value = map[i];
-        if (value && typeof value == "object") {
-            out[i << 2] = value;
+    if (!map) {
+        _internal.map = null;
+        _internal.mapsrc = null;
+    } else {
+        const u32 = Uint32Array.from(map);
+        const u8 = new Uint8Array(u32.buffer);
+        const out = Array.from(u8);
+        for (let i = 0; i < map.length; ++i) {
+            let value = map[i];
+            if (value && typeof value == "object") {
+                out[i << 2] = value;
+            }
         }
+        _internal.map = out;
+        _internal.mapsrc = map;
     }
-    _internal.map = out;
-    _internal.mapsrc = map;
 }
 
 function setFont(font){
