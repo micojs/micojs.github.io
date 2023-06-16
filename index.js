@@ -28177,6 +28177,40 @@ const toolbox = {
             javascript: block => `setPen(0);\n`
         },
 
+        "MicoJS.setMirrored":{
+            message0: "set mirrored %1",
+            args0: [
+                {
+                    "type": "input_value",
+                    "name": "MIRROR",
+                    "block":{"type":"math_number"}
+                }
+            ],
+            previousStatement: null,
+            nextStatement: null,
+            colour: 230,
+            tooltip: "Enables sprite mirroring",
+            helpUrl: "https://github.com/micojs/micojs.github.io/wiki/API#textmessagestring-xnumber-ynumbervoid",
+            javascript: block => `setMirrored(${valueToCode(block, 'MIRROR', JavaScript.ORDER_NONE) || "''"});\n`
+        },
+
+        "MicoJS.setFlipped":{
+            message0: "set flipped %1",
+            args0: [
+                {
+                    "type": "input_value",
+                    "name": "FLIPPED",
+                    "block":{"type":"math_number"}
+                }
+            ],
+            previousStatement: null,
+            nextStatement: null,
+            colour: 230,
+            tooltip: "Enables sprite flipping",
+            helpUrl: "https://github.com/micojs/micojs.github.io/wiki/API#textmessagestring-xnumber-ynumbervoid",
+            javascript: block => `setFlipped(${valueToCode(block, 'FLIPPED', JavaScript.ORDER_NONE) || "''"});\n`
+        },
+
         "MicoJS.setFont":{
             message0: "set font: %1",
             args0: [
