@@ -28069,7 +28069,7 @@ const toolbox = {
                                                  JavaScript.ORDER_NONE) || '0';
         const argument1 = JavaScript.valueToCode(block, 'Y',
                                                  JavaScript.ORDER_NONE) || '0';
-        return [`atan2(${argument1}, ${argument0}) * ${1 / (Math.PI * 180)}`, JavaScript.ORDER_DIVISION];
+        return [`atan2(${argument1}, ${argument0}) * ${180 / Math.PI}`, JavaScript.ORDER_DIVISION];
     };
 
     JavaScript['controls_forEach'] = function(block) {
@@ -28329,7 +28329,7 @@ const toolbox = {
             colour: 231,
             tooltip: "draws an image on the screen",
             helpUrl: "https://github.com/micojs/micojs.github.io/wiki/API#textmessagestring-xnumber-ynumbervoid",
-            javascript: block => `image(${valueToCode(block, 'TEXT', JavaScript.ORDER_NONE) || "''"}, ${valueToCode(block, 'X', JavaScript.ORDER_NONE) || "0"}, ${valueToCode(block, 'Y', JavaScript.ORDER_NONE) || "0"}, (${valueToCode(block, 'ANGLE', JavaScript.ORDER_NONE) || "0"}) * ${1 / (180 * Math.PI)}, ${valueToCode(block, 'SCALE', JavaScript.ORDER_NONE) || "1"});\n`
+            javascript: block => `image(${valueToCode(block, 'TEXT', JavaScript.ORDER_NONE) || "''"}, ${valueToCode(block, 'X', JavaScript.ORDER_NONE) || "0"}, ${valueToCode(block, 'Y', JavaScript.ORDER_NONE) || "0"}, (${valueToCode(block, 'ANGLE', JavaScript.ORDER_NONE) || "0"}) * ${Math.PI / 180}, ${valueToCode(block, 'SCALE', JavaScript.ORDER_NONE) || "1"});\n`
         }
 
     };
