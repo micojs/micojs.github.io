@@ -28107,6 +28107,79 @@ const toolbox = {
     };
 
     const components = {
+        "Math.angleDifference":{
+            message0: "Angle %1 and %2 difference",
+            args0: [
+                {
+                    "type": "input_value",
+                    "name": "A",
+                    "block":{"type":"math_number"}
+                },
+                {
+                    "type": "input_value",
+                    "name": "B",
+                    "block":{"type":"math_number"}
+                }
+            ],
+            output: null,
+            colour: 131,
+            tooltip: "Returns the difference between two angles",
+            helpUrl: "https://github.com/micojs/micojs.github.io/wiki/API#debugargsvoid",
+            javascript: block => [`angleDifference(${(valueToCode(block, 'A', JavaScript.ORDER_NONE) || 0)}, ${(valueToCode(block, 'B', JavaScript.ORDER_NONE) || 0)}, 180)`, JavaScript.ORDER_FUNCTION_CALL]
+        },
+
+        "MicoJS.screenWidth":{
+            message0: "Screen Width",
+            args0: [],
+            output: null,
+            colour: 131,
+            tooltip: "Returns the width of the screen in pixels",
+            helpUrl: "https://github.com/micojs/micojs.github.io/wiki/API#debugargsvoid",
+            javascript: block => [`getWidth()`, JavaScript.ORDER_FUNCTION_CALL]
+        },
+
+        "MicoJS.screenHeight":{
+            message0: "Screen Height",
+            args0: [],
+            output: null,
+            colour: 131,
+            tooltip: "Returns the height of the screen in pixels",
+            helpUrl: "https://github.com/micojs/micojs.github.io/wiki/API#debugargsvoid",
+            javascript: block => [`getHeight()`, JavaScript.ORDER_FUNCTION_CALL]
+        },
+
+        "MicoJS.imageWidth":{
+            message0: "Width of Image %1",
+            args0: [
+                {
+                    "type": "input_value",
+                    "name": "TEXT",
+                    "block":{"type":"resource"}
+                }
+            ],
+            output: null,
+            colour: 131,
+            tooltip: "Returns the width of the image in pixels",
+            helpUrl: "https://github.com/micojs/micojs.github.io/wiki/API#debugargsvoid",
+            javascript: block => [`getWidth(${valueToCode(block, 'TEXT', JavaScript.ORDER_NONE)})`, JavaScript.ORDER_FUNCTION_CALL]
+        },
+
+        "MicoJS.imageHeight":{
+            message0: "Height of Image %1",
+            args0: [
+                {
+                    "type": "input_value",
+                    "name": "TEXT",
+                    "block":{"type":"resource"}
+                }
+            ],
+            output: null,
+            colour: 131,
+            tooltip: "Returns the height of the image in pixels",
+            helpUrl: "https://github.com/micojs/micojs.github.io/wiki/API#debugargsvoid",
+            javascript: block => [`getHeight(${valueToCode(block, 'TEXT', JavaScript.ORDER_NONE)})`, JavaScript.ORDER_FUNCTION_CALL]
+        },
+
         "MicoJS.debug":{
             message0: "debug %1",
             args0: [
