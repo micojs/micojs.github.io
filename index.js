@@ -12078,8 +12078,9 @@ class ProgramParser {
         preEnter.add(new ir.AssignmentExpression('='));
         preEnter.add(new ir.Pop());
         this.parse(node.left);
-        val = preEnter.find(node.left.declarations[0].id.name, true);
-        if (!val) this.error("Could not find iterator " + node.left.declarations[0].id.name);
+        const iterator = node.left.type == 'Identifier' ? node.left.name : node.left.declarations[0].id.name;
+        val = preEnter.find(iterator, true);
+        if (!val) this.error("Could not find iterator " + iterator);
         preEnter.add(new ir.LookUp(max.id));
         preEnter.add(new ir.LookUp(arr.id));
         preEnter.add(new ir.Deref());
