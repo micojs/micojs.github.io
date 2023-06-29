@@ -29859,6 +29859,9 @@ class IDE {
     model.watch('state', state => this.changeState(state));
     model.watch('windowSize', size => this.resize());
     model.watch('runSize', size => this.run(size));
+    model.watch('platformBlurb', blurb => postMessage({
+      build: [blurb]
+    }, '*'));
   }
   resize() {
     if (!this.el.classList.contains('hidden')) {
@@ -31825,6 +31828,19 @@ class Preview {
     model.watch('previewHTML', html => this.showHTML(html));
     this.resize();
   }
+  getPlatformBlurb() {
+    const platform = this.model.get('platform');
+    const blurb = {
+      pokitto: "LPC11U68 72Mhz, 220x176, 36KB RAM, 256Kb Flash, SD card, Speaker",
+      blit: "STM32H750VB 480MHz, 320x240, 1MB SRAM, 32MB Flash, SD card, Speaker",
+      espboy: "ESP8266 160Mhz, 128x128, 81KB RAM, 1Mb Flash, 1Mb internal FlashDisk, 1 RGB LED, Speaker",
+      meta: "ATSAMD21 70Mhz, 160x128, 32KB RAM, 256Kb Flash, SD card, 8 RGB LED, Speaker",
+      metro: "STM32 320x240",
+      pico: "RP2040 133Mhz, 240x240, 264KB SRAM, 16MB Flash, Piezo",
+      galuni: "RP2040 133Mhz, 53x11, 264KB SRAM, 16MB Flash, Speaker"
+    };
+    return blurb[platform];
+  }
   getPlatformSize() {
     const platform = this.model.get('platform');
     const lcd = {
@@ -31844,8 +31860,10 @@ class Preview {
   resize() {
     const container = this.view.screencontainer;
     const size = this.getPlatformSize();
+    const blurb = this.getPlatformBlurb();
     const zoom = this.view.zoom.value;
     this.model.set('platformSize', size || [220, 176]);
+    this.model.set('platformBlurb', blurb || '');
     if (!size) {
       container.display = 'none';
       return;
