@@ -460,6 +460,26 @@
            box-sizing: border-box;
            margin: 2px;
        }
+
+       .speechEditor #container {
+          display: flex;
+          flex-direction: column;
+          background: #777;
+          width: 90%;
+          border-radius: 30px;
+          box-sizing: border-box;
+          height: 160px;
+          margin: auto;
+          position: absolute;
+          top: 0;
+          bottom: 0;
+          left: 0;
+          right: 0;
+          padding: 30px;
+       }
+       .speechEditor #render {
+          background: #888;
+       }
       </style>
 
       <script src="./blockly_compressed.js"></script>
@@ -467,7 +487,7 @@
       <script src="./blockly_en.js"></script>
       <script src="./javascript_compressed.js"></script>
 
-      <script src="index.min.js?nc=39"></script>
+      <script src="index.min.js?nc=40"></script>
       <script>
        var require = { paths: { vs: './monaco/vs' } };
       </script>

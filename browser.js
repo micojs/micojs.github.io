@@ -14,6 +14,7 @@ const _internal = {
     font:R.fontMini,
     updateFrequency: 1000 / 30,
     framebuffer:null,
+    mixer: null,
     pen: {r:0, g:0, b:0, a:255},
     clearColor: {r:0, g:0, b:0, a:255},
     recolor: 0,
@@ -43,6 +44,8 @@ const _internal = {
 
     addEventListener('resize', resize);
 
+    document.body.addEventListener('click', initMixer);
+
     document.body.addEventListener('keydown', event => {
         event.preventDefault();
         if (event.code == "ArrowUp" || event.code == "KeyI") _internal.UP = true;
@@ -53,6 +56,7 @@ const _internal = {
         else if (event.code == "KeyS" || event.code == "Shift") _internal.B = true;
         else if (event.code == "KeyD" || event.code == "KeyZ") _internal.D = true;
         else if (event.code == "KeyF" || event.code == "KeyX") _internal.C = true;
+        initMixer();
     });
 
     document.body.addEventListener('keyup', event => {
@@ -70,6 +74,153 @@ const _internal = {
     const ctx = canvas.getContext("2d");
     _internal.framebuffer = ctx.getImageData(0, 0, canvas.width, canvas.height);
     _internal.fb32 = new Uint32Array(_internal.framebuffer.data.buffer);
+
+    let audioContext = null;
+
+    class AudioWorkletProcessor{}
+    async function createAudioProcessor(clazz) {
+        try {
+            if (!audioContext) {
+                const AudioContext = window.AudioContext || window.webkitAudioContext;
+                audioContext = new AudioContext();
+            }
+            const src = clazz + `registerProcessor('${clazz.name}', ${clazz.name});`;
+            const blob = new Blob([src], {type:"application/javascript"});
+            const url = URL.createObjectURL(blob);
+            await audioContext.audioWorklet.addModule(url);
+        } catch (e) {
+            console.log(e);
+            return null;
+        }
+
+        let node = new AudioWorkletNode(audioContext, clazz.name);
+        node.connect(audioContext.destination);
+
+        return new Proxy(node, {
+            get(target, call, receiver) {
+                if (call == 'then' || call == 'catch')
+                    return undefined;
+                return (...args) => {
+                    node.port.postMessage({call, args});
+                };
+            }
+        });
+    }
+
+    class Mixer extends AudioWorkletProcessor {
+        constructor() {
+            super();
+            this.library = Object.create(null);
+            this.playing = [];
+            this.weights = null;
+            this.port.onmessage = event => {
+                const call = this[event.data.call];
+                if (typeof call == 'function')
+                    call.apply(this, event.data.args);
+                else
+                    console.log("Unknown function ", event.data.call);
+            };
+        }
+
+        loadSound(name, strdata) {
+            let u8;
+            if (!strdata)
+                return;
+
+            if (typeof strdata == 'string') {
+                let arr = [];
+                for (let i = 0; i < strdata.length; i += 2)
+                    arr.push(parseInt(strdata.substr(i, 2), 16));
+                u8 = Uint8Array.from(arr);
+            } else if (strdata instanceof ArrayBuffer) {
+                u8 = new Uint8Array(strdata);
+            } else if (strdata instanceof Array) {
+                u8 = Uint8Array.from(strdata);
+            }
+
+            const speed = (u8[0] * 1000) / sampleRate;
+            let f32 = new Float32Array(u8.length - 5);
+            for (let i = 5; i < u8.length; ++i) {
+                f32[i - 5] = (u8[i] - 127) / 127;
+            }
+            this.library[name] = {
+                f32,
+                speed
+            };
+        }
+
+        play(name, volume = 1, speed = 1) {
+            if (speed <= 0 || volume <= 0)
+                return;
+            const sound = this.library[name];
+            if (!sound) {
+                console.log(name, "not in library");
+                return;
+            }
+            this.playing.push({
+                f32: sound.f32,
+                length: sound.f32.length,
+                speed: speed * sound.speed,
+                position:0,
+                gain:0,
+                volume
+            });
+        }
+
+        process(inputList, outputList, parameters) {
+            const bufferSize = outputList[0][0].length;
+            const channels = outputList[0];
+            const cc = channels.length;
+            if (!this.weights || this.weights.length < bufferSize) {
+                this.weights = new Float32Array(bufferSize);
+            }
+            const weights = this.weights;
+
+            for (let i = 0; i < bufferSize; ++i) {
+                channels[0][i] = 0;
+                weights[i] = 0;
+            }
+
+            for (let sid = 0; sid < this.playing.length; ++sid) {
+                let sound = this.playing[sid];
+                if (sound.position > sound.length && sound.gain < 0.2) {
+                    let last = this.playing.pop();
+                    if (sid <= this.playing.length - 1) {
+                        this.playing[sid] = last;
+                        --sid;
+                    }
+                    continue;
+                }
+                for (let i = 0; i < bufferSize; ++i) {
+                    const position = (sound.position += sound.speed);
+                    const safe = position < (sound.length - 1);
+                    const gain = (sound.gain * 3 + safe) * 0.25;
+                    sound.gain = gain;
+                    weights[i] += gain;
+                    if (safe) {
+                        const volume = gain * sound.volume;
+                        let floor = position|0;
+                        let fract = position - floor;
+                        channels[0][i] += (sound.f32[floor] * (1 - fract) + sound.f32[floor+1] * fract) * volume;
+                    }
+                }
+            }
+
+            for (let i = 0; i < bufferSize; ++i) {
+                const sample = channels[0][i] / weights[i];
+                for (let j = 1; j < cc; ++j)
+                    channels[j][i] = sample;
+            }
+
+            return true;
+        }
+    }
+
+    async function initMixer(){
+        if (_internal.mixer === null) {
+            _internal.mixer = await createAudioProcessor(Mixer);
+        }
+    }
 
     let startTime = performance.now();
     let prevTime = startTime;
@@ -410,6 +561,17 @@ function debug(...args) {
 }
 
 window.onerror = msg => debug(msg);
+
+function sound(effect, volume = 1, speed = 1) {
+    if (!_internal.mixer)
+        return;
+    if (!('name' in effect)) {
+        _internal.nextSound = (_internal.nextSound|0) + 1;
+        effect.name = _internal.nextSound;
+        _internal.mixer.loadSound(effect.name, effect.buffer);
+    }
+    _internal.mixer.play(effect.name, volume, speed);
+}
 
 function rand(...args) {
     let a, b, min, range;
