@@ -31152,6 +31152,8 @@ module.exports.Model = Model;
 const {PNGFS} = require('./pngfs.js');
 const {dom} = require('./dom.js');
 
+let audioContext;
+
 const palette = [
     [255, 0, 255],
     [0, 0, 0],
@@ -31626,10 +31628,43 @@ async function loadImage(data) {
     });
 }
 
+async function loadAudio(data, sampleRate = 8000) {
+    const str = atob(data.substr(data.indexOf(',') + 1));
+    let wav = new Uint8Array(str.length);
+    for (let i = 0; i < wav.length; ++i)
+        wav[i] = str.charCodeAt(i);
+
+    if (!audioContext) {
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        audioContext = new AudioContext({sampleRate});
+    }
+
+    let audioBuffer = await audioContext.decodeAudioData(wav.buffer);
+    return audioBuffer.getChannelData(0);
+}
+
 async function convertRAW(name, data, outfs) {
     const recname = name.split('.')[0];
     const outName = `/.R/${recname}.raw`;
     outfs.writeFile(outName, data);
+}
+
+async function convertWAV(name, data, outfs) {
+    const sampleRate = 8000;
+    const audio = await loadAudio(data, sampleRate);
+    let binary = (sampleRate / 1000|0).toString(16).padStart(2, '0');
+    let len = audio.length;
+    binary += ((len >>  0) & 0xFF).toString(16).padStart(2, '0');
+    binary += ((len >>  8) & 0xFF).toString(16).padStart(2, '0');
+    binary += ((len >> 16) & 0xFF).toString(16).padStart(2, '0');
+    binary += ((len >> 24) & 0xFF).toString(16).padStart(2, '0');
+    for (let i = 0; i < len; i++) {
+        let b = (audio[i] + 1) * 127 + 0.5;
+        binary += (b|0).toString(16).padStart(2, '0');
+    }
+    const recname = name.split('.')[0];
+    const outName = `/.R/${recname}.raw`;
+    outfs.writeFile(outName, binary);
 }
 
 async function convertImage(name, data, outfs, tileTable) {
@@ -31909,6 +31944,9 @@ async function prebuild(fs) {
         }
         if (extension == 'raw') {
             init().push(convertRAW.call(this, entity.name, entity.node.data, outfs));
+        }
+        if (extension == 'mp3' || extension == 'wav' || extension == 'ogg') {
+            init().push(convertWAV.call(this, entity.name, entity.node.data, outfs));
         }
         return false;
     });
